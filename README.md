@@ -8,9 +8,10 @@ ever appears. The dongle is not a USB Audio Class device: it speaks Microsoft's
 **GIP** (Gaming Input Protocol), the same protocol Xbox One accessories use.
 Nothing in macOS knows that protocol.
 
-Status: **the dongle talks to us.** Full announce/identify handshake works from
-userspace, and the device has told us its audio format. Audio streaming is not
-implemented yet.
+Status: **audio plays.** The full handshake works from userspace, the format is
+negotiated, and a test tone streams to the headset over isochronous USB with no
+underruns — 760/760 transfers, 0 errors over 6 seconds. Microphone capture and
+the Core Audio device are not implemented yet.
 
 ## What the hardware actually is
 
@@ -71,12 +72,33 @@ Things that cost time and are not obvious from the Linux source:
 - **Identify info-element offsets are relative to the offset table**, i.e. 16
   bytes into the payload — not to the payload start. Everything decodes as
   garbage if you assume otherwise.
+- **`CFRunLoopRunInMode` must be called with `returnAfterSourceHandled: false`.**
+  With `true` it returns after a single completion callback, which throttles the
+  isochronous stream to roughly one transfer per loop iteration — audio starts
+  and then starves. This looks exactly like a USB problem and is not one.
+- **The audio interface must be set to alt 0 before alt 1.** xone calls this
+  mandatory for third-party devices, and the LVL50 is one.
+
+## Audio stream layout
+
+Derived from the negotiated 48 kHz stereo output format:
+
+```
+buffer_size   = 48000 * 2ch * 2B * 8ms / 1000 = 1536 B per 8 ms
+fragment_size = 1536 / 8 packets              =  192 B per USB frame
+packet_size   = 6 B GIP header + 192 B        =  198 B  (endpoint max 224)
+```
+
+Each 1 ms USB frame carries one `AUDIO_SAMPLES` (`0x60`) packet: a GIP header
+with an incrementing sequence number, followed by raw S16 PCM. Transfers cover
+8 frames each, with 4 in flight.
 
 ## Building
 
 ```bash
 make
-./build/gip-probe 10      # listen for 10 seconds
+./build/gip-probe 10      # handshake, dump what the device advertises
+./build/gip-tone 6        # play a 440 Hz tone in the headset for 6 seconds
 ```
 
 No kernel extension, no DriverKit, no entitlements, no SIP changes — a plain
@@ -87,9 +109,9 @@ userspace process claims the vendor-class interface through IOKit. Runs without
 
 - [x] **Milestone 1** — claim the device, run the GIP handshake, read the
       advertised audio formats (`src/probe.c`)
-- [ ] **Milestone 2** — negotiate the format via `AUDIO_CONTROL`, switch
-      interface 1 to alt 1, and stream isochronous audio out; prove sound
-      reaches the headset
+- [x] **Milestone 2** — negotiate the format via `AUDIO_CONTROL`, switch
+      interface 1 to alt 1, stream isochronous audio out (`src/tone.c`).
+      Confirmed audible in the headset.
 - [ ] **Milestone 3** — capture the microphone from the iso IN endpoint
 - [ ] **Milestone 4** — expose both as a real Core Audio device via an
       AudioServerPlugin in `/Library/Audio/Plug-Ins/HAL`, so every app can

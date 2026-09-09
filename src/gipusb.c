@@ -209,6 +209,17 @@ void gipusb_close(gipusb *u)
 				      kCFRunLoopDefaultMode);
 		u->source = NULL;
 	}
+	if (u->audio_source) {
+		CFRunLoopRemoveSource(CFRunLoopGetCurrent(), u->audio_source,
+				      kCFRunLoopDefaultMode);
+		u->audio_source = NULL;
+	}
+	if (u->audio) {
+		(*u->audio)->SetAlternateInterface(u->audio, 0);
+		(*u->audio)->USBInterfaceClose(u->audio);
+		(*u->audio)->Release(u->audio);
+		u->audio = NULL;
+	}
 	if (u->intf) {
 		(*u->intf)->USBInterfaceClose(u->intf);
 		(*u->intf)->Release(u->intf);
@@ -265,6 +276,91 @@ int gipusb_start_reader(gipusb *u, gipusb_rx_cb cb, void *ctx)
 	}
 
 	return 0;
+}
+
+int gipusb_open_audio(gipusb *u)
+{
+	IOUSBInterfaceInterface500 **a;
+	IOReturn ret;
+	UInt8 neps = 0;
+
+	a = claim_interface(u->dev, GIP_INTF_AUDIO);
+	if (!a) {
+		fprintf(stderr, "audio interface %u not found\n", GIP_INTF_AUDIO);
+		return -1;
+	}
+	u->audio = a;
+
+	ret = (*a)->USBInterfaceOpen(a);
+	if (ret != kIOReturnSuccess) {
+		fprintf(stderr, "USBInterfaceOpen(audio) failed: 0x%08x\n", ret);
+		return -1;
+	}
+
+	/* mandatory for third party devices: bounce through the idle setting */
+	ret = (*a)->SetAlternateInterface(a, 0);
+	if (ret != kIOReturnSuccess)
+		fprintf(stderr, "SetAlternateInterface(0) failed: 0x%08x\n", ret);
+
+	ret = (*a)->SetAlternateInterface(a, 1);
+	if (ret != kIOReturnSuccess) {
+		fprintf(stderr, "SetAlternateInterface(1) failed: 0x%08x\n", ret);
+		return -1;
+	}
+
+	(*a)->GetNumEndpoints(a, &neps);
+	for (UInt8 pipe = 1; pipe <= neps; pipe++) {
+		UInt8 dir, num, type, interval;
+		UInt16 maxpkt;
+
+		if ((*a)->GetPipeProperties(a, pipe, &dir, &num, &type,
+					    &maxpkt, &interval) != kIOReturnSuccess)
+			continue;
+		if (type != kUSBIsoc)
+			continue;
+
+		if (dir == kUSBOut) {
+			u->iso_pipe_out = pipe;
+			u->iso_ep_out = num;
+			u->iso_max_out = maxpkt;
+		} else if (dir == kUSBIn) {
+			u->iso_pipe_in = pipe;
+			u->iso_ep_in = num;
+			u->iso_max_in = maxpkt;
+		}
+	}
+
+	if (!u->iso_pipe_out) {
+		fprintf(stderr, "isochronous out pipe not found\n");
+		return -1;
+	}
+
+	ret = (*a)->CreateInterfaceAsyncEventSource(a, &u->audio_source);
+	if (ret != kIOReturnSuccess) {
+		fprintf(stderr, "audio async source failed: 0x%08x\n", ret);
+		return -1;
+	}
+	CFRunLoopAddSource(CFRunLoopGetCurrent(), u->audio_source,
+			   kCFRunLoopDefaultMode);
+
+	return 0;
+}
+
+uint64_t gipusb_frame_number(gipusb *u)
+{
+	UInt64 frame = 0;
+	AbsoluteTime at;
+
+	(*u->audio)->GetBusFrameNumber(u->audio, &frame, &at);
+	return frame;
+}
+
+IOReturn gipusb_iso_write(gipusb *u, void *buf, uint64_t frame,
+			  uint32_t nframes, IOUSBIsocFrame *list,
+			  IOAsyncCallback1 cb, void *refcon)
+{
+	return (*u->audio)->WriteIsochPipeAsync(u->audio, u->iso_pipe_out, buf,
+						frame, nframes, list, cb, refcon);
 }
 
 int gipusb_write(gipusb *u, const void *buf, uint32_t len)

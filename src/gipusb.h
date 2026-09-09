@@ -23,6 +23,13 @@ typedef struct {
 	uint8_t  rxbuf[GIPUSB_RX_LEN];
 	gipusb_rx_cb cb;
 	void    *ctx;
+
+	/* interface 1 alt 1: isochronous audio */
+	IOUSBInterfaceInterface500 **audio;
+	CFRunLoopSourceRef audio_source;
+	uint8_t  iso_pipe_out, iso_pipe_in;
+	uint8_t  iso_ep_out,   iso_ep_in;
+	uint16_t iso_max_out,  iso_max_in;
 } gipusb;
 
 /* force a USB re-enumeration so the device announces itself again */
@@ -38,3 +45,13 @@ void gipusb_close(gipusb *u);
  */
 int  gipusb_start_reader(gipusb *u, gipusb_rx_cb cb, void *ctx);
 int  gipusb_write(gipusb *u, const void *buf, uint32_t len);
+
+/*
+ * Claims interface 1 and selects alt setting 1. xone sets alt 0 first and
+ * notes it is "mandatory for certain third party devices" - the LVL50 is one.
+ */
+int  gipusb_open_audio(gipusb *u);
+uint64_t gipusb_frame_number(gipusb *u);
+IOReturn gipusb_iso_write(gipusb *u, void *buf, uint64_t frame,
+			  uint32_t nframes, IOUSBIsocFrame *list,
+			  IOAsyncCallback1 cb, void *refcon);

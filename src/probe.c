@@ -339,7 +339,7 @@ int main(int argc, char **argv)
 
 	deadline = now_ms() + secs * 1000.0;
 	while (!stop && now_ms() < deadline)
-		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, true);
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, false);
 
 	printf("\ndone: %d packets\n", packets);
 	if (!packets)

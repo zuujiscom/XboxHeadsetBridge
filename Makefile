@@ -4,9 +4,12 @@ LDFLAGS := -framework CoreFoundation -framework IOKit
 BUILD   := build
 
 .PHONY: all clean probe
-all: $(BUILD)/gip-probe
+all: $(BUILD)/gip-probe $(BUILD)/gip-tone
 
 $(BUILD)/gip-probe: src/probe.c src/gipusb.c src/gip.c | $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+$(BUILD)/gip-tone: src/tone.c src/gipusb.c src/gip.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 $(BUILD):
