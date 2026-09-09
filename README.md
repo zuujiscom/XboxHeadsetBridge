@@ -8,12 +8,11 @@ ever appears. The dongle is not a USB Audio Class device: it speaks Microsoft's
 **GIP** (Gaming Input Protocol), the same protocol Xbox One accessories use.
 Nothing in macOS knows that protocol.
 
-Status: **playback works; microphone capture is still blocked.** Speaker
-playback works through a real Core Audio device that any macOS app can select.
-The bridge daemon auto-reconnects on USB disconnect and forwards headset
-volume/mute state to the HAL ring. The standalone full-duplex microphone test
-still receives zero bytes from the USB IN endpoint, so the HAL microphone is
-not yet functional.
+Status: **bidirectional audio is working.** Speaker playback works through a
+real Core Audio device that any macOS app can select, and the bridge now receives
+24 kHz mono microphone packets from the USB IN endpoint and forwards them to
+the HAL ring. The bridge daemon auto-reconnects on USB disconnect and forwards
+headset volume/mute state to the HAL ring.
 
 ## Architecture
 
@@ -106,6 +105,11 @@ sudo make install-plugin            # install HAL plug-in + restart coreaudiod
 ./build/gip-bridge                  # start the bridge (runs until ctrl-c)
 ```
 
+The bridge is a userspace program and does not need `sudo` to run. Rebuild after
+source changes with `make -B build/gip-bridge`. The working authentication and
+capture path is exercised by `build/gip-bridge`; `build/gip-mic` remains useful
+for standalone WAV capture diagnostics.
+
 Then select "Xbox Wireless Headset" as both output and input in any macOS
 audio app.
 
@@ -143,6 +147,21 @@ Things that cost time and are not obvious from the Linux source:
   and then starves. This looks exactly like a USB problem and is not one.
 - **The audio interface must be set to alt 0 before alt 1.** xone calls this
   mandatory for third-party devices, and the LVL50 is one.
+- **Authentication is required before audio streams are useful.** The PDP
+  dongle performs the v1 GIP RSA exchange (host hello, client hello,
+  certificate, encrypted secret, host finish). This firmware acknowledges the
+  client-finish request but does not return a client-finish payload; matching
+  the Windows capture, the bridge treats the GIP acknowledgement for request
+  `0x08` as completion and sends the 2-byte auth-complete control message.
+- **Mic packets are 54 bytes, not 128 bytes.** Each packet is a 6-byte GIP
+  header plus 48 bytes of 24 kHz mono S16. Requesting the endpoint's advertised
+  128-byte maximum caused macOS to complete reads with zero bytes; the bridge
+  requests 54 bytes per frame.
+- **Restart the isochronous IN pipe after authentication.** Reads submitted
+  during the RSA exchange can become stale (`0xe00002ee`,
+  `kIOReturnIsoTooOld`). The bridge aborts those reads, rebases USB frames, and
+  submits fresh capture transfers after sending device Start. An aborted read
+  during that deliberate restart is not a physical disconnect.
 
 ## Audio stream layout
 
@@ -173,9 +192,9 @@ with an incrementing sequence number, followed by raw S16 PCM. Transfers cover
 - [x] **Milestone 2** — negotiate the format via `AUDIO_CONTROL`, switch
       interface 1 to alt 1, stream isochronous audio out (`src/tone.c`).
       Confirmed audible in the headset.
-- [ ] **Milestone 3** — capture the microphone from the iso IN endpoint
+- [x] **Milestone 3** — capture the microphone from the iso IN endpoint
       (`src/mic.c`, 24 kHz mono with 2x linear interpolation to 48 kHz).
-- [ ] **Milestone 4** — expose both as a real Core Audio device via an
+- [x] **Milestone 4** — expose both as a real Core Audio device via an
       AudioServerPlugin in `/Library/Audio/Plug-Ins/HAL`, so every app can
       select the headset (`plugin/XboxHeadset.c` + `src/bridge.c`).
 - [x] Volume/mute wheel handling (live `AUDIO_CONTROL` packets forwarded to
