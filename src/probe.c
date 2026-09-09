@@ -335,11 +335,16 @@ int main(int argc, char **argv)
 	printf("listening %d s (ctrl-c to stop)\n\n", secs);
 
 	/* nudge the device in case it announced before we attached */
+	{
+		uint8_t power = GIP_PWR_ON;
+		send_pkt(&u, GIP_CMD_POWER, GIP_OPT_INTERNAL, 0,
+			 &power, sizeof(power));
+	}
 	send_pkt(&u, GIP_CMD_IDENTIFY, GIP_OPT_INTERNAL, 0, NULL, 0);
 
 	deadline = now_ms() + secs * 1000.0;
 	while (!stop && now_ms() < deadline)
-		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, false);
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, true);
 
 	printf("\ndone: %d packets\n", packets);
 	if (!packets)

@@ -53,6 +53,7 @@ enum gip_audio_format {
 };
 
 enum gip_audio_control {
+	GIP_AUD_CTRL_VOLUME_CHAT   = 0x00,
 	GIP_AUD_CTRL_FORMAT_CHAT = 0x01,
 	GIP_AUD_CTRL_FORMAT      = 0x02,
 	GIP_AUD_CTRL_VOLUME      = 0x03,
@@ -95,6 +96,12 @@ struct gip_pkt_acknowledge {
 	uint16_t length;
 	uint8_t  padding[2];
 	uint16_t remaining;
+} __attribute__((packed));
+
+/* GIP_CMD_AUDIO_SAMPLES payload. The first field is metadata, not PCM. */
+struct gip_pkt_audio_samples {
+	uint16_t length_out;
+	uint8_t  samples[];
 } __attribute__((packed));
 
 int  gip_encode_header(const struct gip_header *hdr, uint8_t *buf);

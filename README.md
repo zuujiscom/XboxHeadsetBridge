@@ -8,10 +8,44 @@ ever appears. The dongle is not a USB Audio Class device: it speaks Microsoft's
 **GIP** (Gaming Input Protocol), the same protocol Xbox One accessories use.
 Nothing in macOS knows that protocol.
 
-Status: **audio plays.** The full handshake works from userspace, the format is
-negotiated, and a test tone streams to the headset over isochronous USB with no
-underruns — 760/760 transfers, 0 errors over 6 seconds. Microphone capture and
-the Core Audio device are not implemented yet.
+Status: **playback works; microphone capture is still blocked.** Speaker
+playback works through a real Core Audio device that any macOS app can select.
+The bridge daemon auto-reconnects on USB disconnect and forwards headset
+volume/mute state to the HAL ring. The standalone full-duplex microphone test
+still receives zero bytes from the USB IN endpoint, so the HAL microphone is
+not yet functional.
+
+## Architecture
+
+```
+                 macOS CoreAudio / System Apps
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Core Audio HAL Plug-In (plugin/XboxHeadset.c)               │
+│  - Runs inside sandboxed coreaudiod                         │
+│  - Exposes "Xbox Wireless Headset" virtual audio device     │
+│  - Captures 48 kHz stereo Float32 audio from the OS mix     │
+│  - Presents 48 kHz mono Float32 mic input to the OS         │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼ Lock-free SPSC Ring Buffer
+                 (shared/ring.h — shm_open / mmap)
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Bridge Daemon (src/bridge.c -> build/gip-bridge)            │
+│  - Userspace process owning IOKit USB interfaces            │
+│  - Drains ring buffer, converts Float32 -> S16 PCM          │
+│  - Wraps audio in GIP 0x60 (AUDIO_SAMPLES) packets          │
+│  - Streams 8-frame isochronous transfers to USB OUT ep 0x02 │
+│  - Captures ISO IN ep 0x83, upsamples 24→48 kHz, fills ring │
+│  - Auto-reconnects on USB disconnect                        │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+               PDP LVL50 Wireless USB Dongle
+```
 
 ## What the hardware actually is
 
@@ -54,6 +88,37 @@ The advertised format matches the endpoint sizes: 48 kHz stereo S16 is
 The dongle also emits live `AUDIO_CONTROL` packets carrying volume and mute
 state as you turn the wheel on the headset.
 
+## Tools
+
+| Tool | Description |
+|---|---|
+| `build/gip-probe [secs]` | Claim the device, run GIP handshake, dump advertised audio formats and capabilities |
+| `build/gip-tone [secs]` | Stream a 440 Hz sine wave to the headset (milestone 2 test) |
+| `build/gip-mic [secs] [file.wav]` | Capture mic audio, display VU meter, optionally record to WAV |
+| `build/gip-bridge` | Full bidirectional bridge daemon — auto-reconnects on disconnect |
+| `build/gip-status` | One-shot or continuous (`-c`) display of battery, volume, mute, stream stats |
+
+## Building and installing
+
+```bash
+make                                # build everything
+sudo make install-plugin            # install HAL plug-in + restart coreaudiod
+./build/gip-bridge                  # start the bridge (runs until ctrl-c)
+```
+
+Then select "Xbox Wireless Headset" as both output and input in any macOS
+audio app.
+
+To uninstall:
+```bash
+make uninstall-plugin               # remove HAL plug-in + restart coreaudiod
+```
+
+No kernel extension, no DriverKit, no entitlements, no SIP changes — a plain
+userspace process claims the vendor-class interface through IOKit. Runs without
+`sudo` (except for `make install-plugin` which needs root to write to
+`/Library/Audio/Plug-Ins/HAL`).
+
 ## Protocol notes learned the hard way
 
 Things that cost time and are not obvious from the Linux source:
@@ -81,7 +146,7 @@ Things that cost time and are not obvious from the Linux source:
 
 ## Audio stream layout
 
-Derived from the negotiated 48 kHz stereo output format:
+### Output (48 kHz stereo S16)
 
 ```
 buffer_size   = 48000 * 2ch * 2B * 8ms / 1000 = 1536 B per 8 ms
@@ -89,21 +154,17 @@ fragment_size = 1536 / 8 packets              =  192 B per USB frame
 packet_size   = 6 B GIP header + 192 B        =  198 B  (endpoint max 224)
 ```
 
-Each 1 ms USB frame carries one `AUDIO_SAMPLES` (`0x60`) packet: a GIP header
-with an incrementing sequence number, followed by raw S16 PCM. Transfers cover
-8 frames each, with 4 in flight.
+### Input (24 kHz mono S16, upsampled to 48 kHz mono float)
 
-## Building
-
-```bash
-make
-./build/gip-probe 10      # handshake, dump what the device advertises
-./build/gip-tone 6        # play a 440 Hz tone in the headset for 6 seconds
+```
+buffer_size   = 24000 * 1ch * 2B * 8ms / 1000 =  384 B per 8 ms
+fragment_size = 384 / 8 packets               =   48 B per USB frame
+packet_size   = 6 B GIP header + 48 B         =   54 B  (endpoint max 128)
 ```
 
-No kernel extension, no DriverKit, no entitlements, no SIP changes — a plain
-userspace process claims the vendor-class interface through IOKit. Runs without
-`sudo`.
+Each 1 ms USB frame carries one `AUDIO_SAMPLES` (`0x60`) packet: a GIP header
+with an incrementing sequence number, followed by raw S16 PCM. Transfers cover
+8 frames each, with 4 in flight in each direction.
 
 ## Roadmap
 
@@ -113,13 +174,15 @@ userspace process claims the vendor-class interface through IOKit. Runs without
       interface 1 to alt 1, stream isochronous audio out (`src/tone.c`).
       Confirmed audible in the headset.
 - [ ] **Milestone 3** — capture the microphone from the iso IN endpoint
+      (`src/mic.c`, 24 kHz mono with 2x linear interpolation to 48 kHz).
 - [ ] **Milestone 4** — expose both as a real Core Audio device via an
       AudioServerPlugin in `/Library/Audio/Plug-Ins/HAL`, so every app can
-      select the headset
-- [ ] Volume/mute wheel handling, battery reporting, hot-plug
-
-For a milestone-2 prototype the HAL plugin can be skipped entirely — point the
-bridge at BlackHole or a loopback device first.
+      select the headset (`plugin/XboxHeadset.c` + `src/bridge.c`).
+- [x] Volume/mute wheel handling (live `AUDIO_CONTROL` packets forwarded to
+      HAL ring)
+- [x] Auto-reconnect on USB disconnect (device pull, headset power-off)
+- [ ] Battery reporting (needs `GIP_CMD_STATUS` parsing or HID report)
+- [ ] Hot-plug detection for dynamic plug/unplug without bridge restart
 
 ## Credit and license
 

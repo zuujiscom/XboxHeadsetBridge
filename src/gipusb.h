@@ -55,3 +55,6 @@ uint64_t gipusb_frame_number(gipusb *u);
 IOReturn gipusb_iso_write(gipusb *u, void *buf, uint64_t frame,
 			  uint32_t nframes, IOUSBIsocFrame *list,
 			  IOAsyncCallback1 cb, void *refcon);
+IOReturn gipusb_iso_read(gipusb *u, void *buf, uint64_t frame,
+			 uint32_t nframes, IOUSBIsocFrame *list,
+			 IOAsyncCallback1 cb, void *refcon);

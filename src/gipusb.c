@@ -123,6 +123,7 @@ int gipusb_reenumerate(uint16_t vid, uint16_t pid)
 
 	/* forces the device to detach and re-announce itself on reattach */
 	ret = (*dev)->USBDeviceReEnumerate(dev, 0);
+	(*dev)->USBDeviceClose(dev);
 	(*dev)->Release(dev);
 
 	return ret == kIOReturnSuccess ? 0 : -1;
@@ -146,7 +147,7 @@ int gipusb_open(gipusb *u, uint16_t vid, uint16_t pid, uint8_t ifnum)
 		fprintf(stderr, "USBDeviceOpen failed: 0x%08x%s\n", ret,
 			ret == kIOReturnExclusiveAccess ?
 			" (another driver has the device)" : " (try sudo)");
-		return -1;
+		goto fail_dev;
 	}
 
 	/* nothing matched this vendor-class device, so no configuration is set */
@@ -156,20 +157,20 @@ int gipusb_open(gipusb *u, uint16_t vid, uint16_t pid, uint8_t ifnum)
 		ret = (*u->dev)->SetConfiguration(u->dev, 1);
 		if (ret != kIOReturnSuccess) {
 			fprintf(stderr, "SetConfiguration(1) failed: 0x%08x\n", ret);
-			return -1;
+			goto fail_dev;
 		}
 	}
 
 	u->intf = claim_interface(u->dev, ifnum);
 	if (!u->intf) {
 		fprintf(stderr, "interface %u not found\n", ifnum);
-		return -1;
+		goto fail_dev;
 	}
 
 	ret = (*u->intf)->USBInterfaceOpen(u->intf);
 	if (ret != kIOReturnSuccess) {
 		fprintf(stderr, "USBInterfaceOpen failed: 0x%08x\n", ret);
-		return -1;
+		goto fail_intf;
 	}
 
 	(*u->intf)->GetNumEndpoints(u->intf, &neps);
@@ -196,10 +197,20 @@ int gipusb_open(gipusb *u, uint16_t vid, uint16_t pid, uint8_t ifnum)
 
 	if (!u->pipe_in || !u->pipe_out) {
 		fprintf(stderr, "interrupt pipes not found on interface %u\n", ifnum);
-		return -1;
+		goto fail_intf;
 	}
 
 	return 0;
+
+fail_intf:
+	(*u->intf)->USBInterfaceClose(u->intf);
+	(*u->intf)->Release(u->intf);
+	u->intf = NULL;
+fail_dev:
+	(*u->dev)->USBDeviceClose(u->dev);
+	(*u->dev)->Release(u->dev);
+	u->dev = NULL;
+	return -1;
 }
 
 void gipusb_close(gipusb *u)
@@ -236,6 +247,13 @@ static void rx_complete(void *refcon, IOReturn result, void *arg0)
 {
 	gipusb *u = refcon;
 	uint32_t len = (uint32_t)(uintptr_t)arg0;
+	static unsigned debug_completions;
+
+	if (debug_completions < 8) {
+		fprintf(stderr, "interrupt read completion: result=0x%08x len=%u\n",
+			result, len);
+		debug_completions++;
+	}
 
 	if (result == kIOReturnAborted)
 		return;
@@ -361,6 +379,16 @@ IOReturn gipusb_iso_write(gipusb *u, void *buf, uint64_t frame,
 {
 	return (*u->audio)->WriteIsochPipeAsync(u->audio, u->iso_pipe_out, buf,
 						frame, nframes, list, cb, refcon);
+}
+
+IOReturn gipusb_iso_read(gipusb *u, void *buf, uint64_t frame,
+			 uint32_t nframes, IOUSBIsocFrame *list,
+			 IOAsyncCallback1 cb, void *refcon)
+{
+	if (!u->audio || !u->iso_pipe_in)
+		return kIOReturnNoDevice;
+	return (*u->audio)->ReadIsochPipeAsync(u->audio, u->iso_pipe_in, buf,
+					       frame, nframes, list, cb, refcon);
 }
 
 int gipusb_write(gipusb *u, const void *buf, uint32_t len)
