@@ -1,0 +1,103 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * GIP (Gaming Input Protocol) definitions.
+ *
+ * Ported from xone by Severin von Wnuck-Lipinski:
+ *   https://github.com/medusalix/xone  (GPL-2.0-or-later)
+ */
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#define GIP_HDR_MIN_LENGTH  3
+#define GIP_PKT_MAX_LENGTH  58
+#define GIP_AUDIO_INTERVAL  8   /* ms between audio packets */
+
+enum gip_command {
+	GIP_CMD_ACKNOWLEDGE   = 0x01,
+	GIP_CMD_ANNOUNCE      = 0x02,
+	GIP_CMD_STATUS        = 0x03,
+	GIP_CMD_IDENTIFY      = 0x04,
+	GIP_CMD_POWER         = 0x05,
+	GIP_CMD_AUTHENTICATE  = 0x06,
+	GIP_CMD_VIRTUAL_KEY   = 0x07,
+	GIP_CMD_AUDIO_CONTROL = 0x08,
+	GIP_CMD_RUMBLE        = 0x09,
+	GIP_CMD_LED           = 0x0a,
+	GIP_CMD_HID_REPORT    = 0x0b,
+	GIP_CMD_FIRMWARE      = 0x0c,
+	GIP_CMD_SERIAL_NUMBER = 0x1e,
+	GIP_CMD_INPUT         = 0x20,
+	GIP_CMD_AUDIO_SAMPLES = 0x60,
+};
+
+enum gip_option {
+	GIP_OPT_ACKNOWLEDGE = (1 << 4),
+	GIP_OPT_INTERNAL    = (1 << 5),
+	GIP_OPT_CHUNK_START = (1 << 6),
+	GIP_OPT_CHUNK       = (1 << 7),
+};
+
+enum gip_power_mode {
+	GIP_PWR_ON    = 0x00,
+	GIP_PWR_SLEEP = 0x01,
+	GIP_PWR_OFF   = 0x04,
+	GIP_PWR_RESET = 0x07,
+};
+
+enum gip_audio_format {
+	GIP_AUD_FORMAT_16KHZ_MONO   = 0x05,
+	GIP_AUD_FORMAT_24KHZ_MONO   = 0x09,
+	GIP_AUD_FORMAT_48KHZ_STEREO = 0x10,
+};
+
+enum gip_audio_control {
+	GIP_AUD_CTRL_FORMAT_CHAT = 0x01,
+	GIP_AUD_CTRL_FORMAT      = 0x02,
+	GIP_AUD_CTRL_VOLUME      = 0x03,
+};
+
+struct gip_header {
+	uint8_t  command;
+	uint8_t  options;
+	uint8_t  sequence;
+	uint32_t packet_length;
+	uint32_t chunk_offset;
+};
+
+/* GIP_CMD_ANNOUNCE payload */
+struct gip_pkt_announce {
+	uint8_t  address[6];
+	uint16_t unknown;
+	uint16_t vendor_id;
+	uint16_t product_id;
+	struct { uint16_t major, minor, build, revision; } fw_version, hw_version;
+} __attribute__((packed));
+
+/* GIP_CMD_IDENTIFY response payload (offsets are into the whole payload) */
+struct gip_pkt_identify {
+	uint8_t  unknown[16];
+	uint16_t client_commands_offset;
+	uint16_t firmware_versions_offset;
+	uint16_t audio_formats_offset;
+	uint16_t capabilities_out_offset;
+	uint16_t capabilities_in_offset;
+	uint16_t classes_offset;
+	uint16_t interfaces_offset;
+	uint16_t hid_descriptor_offset;
+} __attribute__((packed));
+
+struct gip_pkt_acknowledge {
+	uint8_t  unknown;
+	uint8_t  command;
+	uint8_t  options;
+	uint16_t length;
+	uint8_t  padding[2];
+	uint16_t remaining;
+} __attribute__((packed));
+
+int  gip_encode_header(const struct gip_header *hdr, uint8_t *buf);
+int  gip_decode_header(struct gip_header *hdr, const uint8_t *data, int len);
+const char *gip_command_name(uint8_t cmd);
+const char *gip_audio_format_name(uint8_t fmt);
