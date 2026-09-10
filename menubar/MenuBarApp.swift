@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct StatusPanel: View {
     @Bindable var bridge: BridgeController
 
+    @State private var loginItemEnabled = LoginItem.isEnabled
+    @State private var loginItemError: String?
+    @State private var copiedDiagnostics = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -118,9 +122,44 @@ struct StatusPanel: View {
                 .controlSize(.regular)
                 .frame(maxWidth: .infinity)
 
+            Toggle("Start bridge when app opens", isOn: Binding(
+                get: { bridge.startsAutomatically },
+                set: { bridge.startsAutomatically = $0 }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            Toggle("Open at Login", isOn: Binding(
+                get: { loginItemEnabled },
+                set: { newValue in
+                    loginItemError = LoginItem.setEnabled(newValue)
+                    loginItemEnabled = LoginItem.isEnabled
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            if let loginItemError {
+                Text(loginItemError)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if loginItemEnabled && !LoginItem.isInApplications {
+                // A login item pointing into build/ breaks on the next clean.
+                Text("Running from outside /Applications — use `make install-menubar`.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Button("Open Log") {
                     NSWorkspace.shared.open(BridgeController.logURL)
+                }
+                .buttonStyle(.link)
+                Button("Copy Diagnostics") {
+                    Diagnostics.copyToPasteboard(bridge)
+                    copiedDiagnostics = true
                 }
                 .buttonStyle(.link)
                 Spacer()
@@ -128,6 +167,12 @@ struct StatusPanel: View {
                     .buttonStyle(.link)
             }
             .font(.caption)
+
+            if copiedDiagnostics {
+                Text("Diagnostics copied to the clipboard.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

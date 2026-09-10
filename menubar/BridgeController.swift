@@ -38,6 +38,13 @@ final class BridgeController {
     /// too — the bridge thread needs a way back to it.
     nonisolated(unsafe) static var shared: BridgeController?
 
+    /// Off keeps the app a pure on/off control; on makes "Open at Login"
+    /// actually deliver working audio after a login rather than just an icon.
+    var startsAutomatically: Bool {
+        get { UserDefaults.standard.object(forKey: "StartBridgeOnOpen") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "StartBridgeOnOpen") }
+    }
+
     init() {
         Self.shared = self
         refresh()
@@ -46,6 +53,10 @@ final class BridgeController {
         }
         pollTimer = timer
         RunLoop.main.add(timer, forMode: .common)
+
+        if startsAutomatically, state == .stopped {
+            start()
+        }
     }
 
     // MARK: - Lifecycle
