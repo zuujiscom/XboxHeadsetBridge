@@ -95,6 +95,9 @@ static bool auth_out_terminator_pending;
 static uint8_t auth_in_buf[4096];
 static size_t auth_in_len, auth_in_total;
 static bool auth_armed;
+/* Set before the first attempt of a series, and again after a real disconnect;
+ * see the note in run_session. */
+static bool reenumerate_next = true;
 
 static void start_auth_after_status(void)
 {
@@ -741,10 +744,18 @@ static int run_session(void)
 
 	out_packet_size = gip_encode_header(&probe_hdr, tmp) + OUT_FRAG_SIZE;
 
-	printf("re-enumerating %04x:%04x\n", VID_PDP, PID_LVL50);
-	if (gipusb_reenumerate(VID_PDP, PID_LVL50) == 0) {
-		struct timespec ts = { .tv_sec = 2 };
-		nanosleep(&ts, NULL);
+	/* Re-enumeration is a USB port reset, not a retry primitive. Doing it on
+	 * every reconnect attempt means resetting the dongle every few seconds
+	 * for as long as the headset stays off, which this hardware does not
+	 * tolerate -- it drops off the bus entirely. Reset once when a session
+	 * series begins, then just reopen. */
+	if (reenumerate_next) {
+		reenumerate_next = false;
+		log_line("re-enumerating %04x:%04x\n", VID_PDP, PID_LVL50);
+		if (gipusb_reenumerate(VID_PDP, PID_LVL50) == 0) {
+			struct timespec ts = { .tv_sec = 2 };
+			nanosleep(&ts, NULL);
+		}
 	}
 
 	if (gipusb_open(&u, VID_PDP, PID_LVL50, GIP_INTF_DATA) < 0)
@@ -854,6 +865,11 @@ static int run_session(void)
 	restarting_capture = false;
 	for (int i = 0; i < NUM_XFERS; i++)
 		submit_in_xfer(&in_xfers[i]);
+	/* Only now is the headset actually streaming. Setting this at attempt time
+	 * made a bridge stuck retrying its handshake report itself as connected,
+	 * which is exactly the state someone reads diagnostics in. */
+	if (ring)
+		atomic_store(&ring->device_online, 1);
 	log_line("\nbridge running - bidirectional audio active\n\n");
 
 	/* Setup and authentication deliberately wait on control replies.  Do not
@@ -922,17 +938,47 @@ int bridge_run(void)
 	log_line("ring mapped: %u frames, %u out ch, %u in ch\n",
 		 ring->capacity, ring->out_channels, ring->in_channels);
 
-	/* auto-reconnect loop */
-	while (!stop) {
-		int rc;
+	/* Reconnect loop.
+	 *
+	 * A failed handshake used to break out of here, so the bridge tried once
+	 * and gave up for good. Started automatically at login that is fatal: the
+	 * headset is usually still asleep when the app launches, the one attempt
+	 * fails, and the user finds no audio and nothing retrying.
+	 *
+	 * The backoff matters as much as the retry. Hammering this dongle with
+	 * rapid re-enumeration is what appears to wedge it, so the delay grows to
+	 * a half minute and stays there: patient enough to sit waiting all day,
+	 * slow enough not to bother the hardware. Powering the headset on is then
+	 * enough to get audio, with nothing to click. */
+	static const unsigned backoff_secs[] = { 2, 4, 8, 15, 30 };
+	unsigned attempt = 0;
 
-		atomic_store(&ring->device_online, 1);
-		rc = run_session();
+	reenumerate_next = true;
+
+	while (!stop) {
+		int rc = run_session();
+
 		atomic_store(&ring->device_online, 0);
 
-		if (rc == 0 || rc == 1)
-			break;
-		/* rc == 2: disconnect detected, loop reconnects */
+		if (rc == 0)
+			break;          /* asked to stop */
+
+		if (rc == 2) {
+			/* A device that was live and dropped: reset it once and
+			 * retry promptly. */
+			attempt = 0;
+			reenumerate_next = true;
+		}
+
+		unsigned wait = backoff_secs[attempt < 5 ? attempt : 4];
+
+		if (attempt < 5)
+			attempt++;
+		log_line("\nretrying in %u s (is the headset powered on?)\n", wait);
+
+		/* Sleep in slices so stopping stays responsive. */
+		for (unsigned i = 0; i < wait * 10 && !stop; i++)
+			usleep(100000);
 	}
 
 	log_line("\nexiting.\n");
