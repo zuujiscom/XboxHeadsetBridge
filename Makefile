@@ -18,8 +18,19 @@ $(BUILD)/gip-tone: src/tone.c src/gipusb.c src/gip.c | $(BUILD)
 $(BUILD)/gip-mic: src/mic.c src/gipusb.c src/gip.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-$(BUILD)/gip-bridge: src/bridge.c src/gip_auth.c src/gipusb.c src/gip.c shared/ring.h | $(BUILD)
-	$(CC) $(CFLAGS) -I/opt/homebrew/opt/openssl@3/include src/bridge.c src/gip_auth.c src/gipusb.c src/gip.c -o $@ $(LDFLAGS) -L/opt/homebrew/opt/openssl@3/lib -lcrypto
+# The bridge core, shared by the gip-bridge CLI and the menu bar app.
+SSL_PREFIX  := /opt/homebrew/opt/openssl@3
+SSL_CFLAGS  := -I$(SSL_PREFIX)/include
+SSL_LDFLAGS := -L$(SSL_PREFIX)/lib -lcrypto
+BRIDGE_SRC  := src/bridge.c src/gip_auth.c src/gipusb.c src/gip.c
+BRIDGE_HDR  := src/bridge.h src/gip.h src/gipusb.h src/gip_auth.h shared/ring.h
+BRIDGE_OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(BRIDGE_SRC))
+
+$(BUILD)/%.o: src/%.c $(BRIDGE_HDR) | $(BUILD)
+	$(CC) $(CFLAGS) $(SSL_CFLAGS) -c $< -o $@
+
+$(BUILD)/gip-bridge: src/main.c $(BRIDGE_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) src/main.c $(BRIDGE_OBJ) -o $@ $(LDFLAGS) $(SSL_LDFLAGS)
 
 $(BUILD)/gip-status: src/status.c shared/ring.h | $(BUILD)
 	$(CC) $(CFLAGS) src/status.c -o $@ $(LDFLAGS)
@@ -57,21 +68,32 @@ MENUBAR_BIN  := $(MENUBAR)/Contents/MacOS/XboxHeadsetMenu
 MENUBAR_SRC  := $(wildcard menubar/*.swift)
 
 .PHONY: menubar-app install-menubar
-menubar-app: $(MENUBAR_BIN) $(MENUBAR)/Contents/Resources/gip-bridge
+menubar-app: $(MENUBAR_BIN)
 
 $(BUILD)/ringshim.o: menubar/ringshim.c menubar/ringshim.h shared/ring.h | $(BUILD)
 	$(CC) $(CFLAGS) -c menubar/ringshim.c -o $@
 
-$(MENUBAR_BIN): $(MENUBAR_SRC) menubar/Bridging.h menubar/Info.plist $(BUILD)/ringshim.o
-	@mkdir -p $(MENUBAR)/Contents/MacOS $(MENUBAR)/Contents/Resources
-	cp menubar/Info.plist $(MENUBAR)/Contents/Info.plist
-	$(SWIFTC) $(SWIFTFLAGS) -import-objc-header menubar/Bridging.h \
-		$(MENUBAR_SRC) $(BUILD)/ringshim.o -o $@
-	@codesign --force --sign - $(MENUBAR) 2>/dev/null || true
+# The bridge runs inside the app, on its own thread -- no child process. The
+# gip-bridge CLI is still built from the same objects for diagnosis.
+#
+# libcrypto is linked by absolute Homebrew path, which does not exist on other
+# machines, so it is copied into the bundle and both install names rewritten to
+# @rpath.
+SSL_DYLIB := libcrypto.3.dylib
 
-$(MENUBAR)/Contents/Resources/gip-bridge: $(BUILD)/gip-bridge
-	@mkdir -p $(MENUBAR)/Contents/Resources
-	cp $(BUILD)/gip-bridge $@
+$(MENUBAR_BIN): $(MENUBAR_SRC) menubar/Bridging.h menubar/Info.plist $(BUILD)/ringshim.o $(BRIDGE_OBJ)
+	@mkdir -p $(MENUBAR)/Contents/MacOS $(MENUBAR)/Contents/Resources $(MENUBAR)/Contents/Frameworks
+	cp menubar/Info.plist $(MENUBAR)/Contents/Info.plist
+	cp $(SSL_PREFIX)/lib/$(SSL_DYLIB) $(MENUBAR)/Contents/Frameworks/
+	chmod u+w $(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB)
+	install_name_tool -id @rpath/$(SSL_DYLIB) \
+		$(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB)
+	$(SWIFTC) $(SWIFTFLAGS) -import-objc-header menubar/Bridging.h -Isrc -Ishared \
+		$(MENUBAR_SRC) $(BUILD)/ringshim.o $(BRIDGE_OBJ) -o $@ \
+		$(LDFLAGS) $(SSL_LDFLAGS) -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+	install_name_tool -change $(SSL_PREFIX)/lib/$(SSL_DYLIB) @rpath/$(SSL_DYLIB) $@
+	@codesign --force --sign - $(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB) 2>/dev/null || true
+	@codesign --force --sign - $(MENUBAR) 2>/dev/null || true
 
 # Drop the app into /Applications so it can be added to Login Items.
 install-menubar: menubar-app

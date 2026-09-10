@@ -53,6 +53,9 @@ int main(int argc, char **argv)
 			printf("\033[H\033[J");
 
 		printf("=== Xbox Wireless Headset Status ===\n");
+		/* device_online is set by whichever bridge last ran; a bridge killed
+		 * outright cannot clear it, so treat a stalled playback counter as
+		 * the real signal. */
 		printf("  Device Online : %s\n", online ? "YES (Streaming)" : "NO (Offline)");
 		printf("  Microphone    : %s\n", muted ? "MUTED" : "UNMUTED");
 		printf("  Volume (macOS): %u%%%s\n", hvol, hmute ? "  [MUTED]" : "");

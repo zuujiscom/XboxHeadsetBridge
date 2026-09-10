@@ -13,6 +13,7 @@
 #include "gip.h"
 #include "gipusb.h"
 #include "gip_auth.h"
+#include "bridge.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -54,13 +55,18 @@
 #define MIC_SAMPLES_MAX  64
 
 static volatile sig_atomic_t stop;
-static void on_sigint(int sig) { (void)sig; stop = 1; }
+static volatile sig_atomic_t running;
+
+void bridge_stop(void) { stop = 1; }
+bool bridge_is_running(void) { return running != 0; }
 
 /* The live counter line is redrawn twice a second with \r. That is useful at a
  * terminal and pure noise anywhere else (a log file, or the menu bar app's
  * captured stdout), so it is opt-in. Handshake logging stays on: it is what
  * makes a failed pairing diagnosable. */
 static bool verbose;
+
+void bridge_set_verbose(bool on) { verbose = on; }
 
 static void log_line(const char *fmt, ...)
 {
@@ -890,46 +896,23 @@ static int run_session(void)
 	return 0;
 }
 
-static void usage(const char *argv0)
+int bridge_run(void)
 {
-	fprintf(stderr,
-		"usage: %s [-v|--verbose] [-h|--help]\n"
-		"  -v, --verbose   print the live packet-counter line twice a second\n",
-		argv0);
-}
-
-int main(int argc, char **argv)
-{
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
-			verbose = true;
-		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-			usage(argv[0]);
-			return 0;
-		} else {
-			fprintf(stderr, "unknown option: %s\n", argv[i]);
-			usage(argv[0]);
-			return 1;
-		}
-	}
-
-	signal(SIGINT, on_sigint);
-
-	/* Unbuffer stdout: the menu bar app reads this through a pipe, where the
-	 * default full buffering would withhold handshake progress for minutes. */
-	setvbuf(stdout, NULL, _IONBF, 0);
+	stop = 0;
+	running = 1;
 
 	ring = ring_map(true);
 	if (!ring) {
 		fprintf(stderr, "could not map the shared ring buffer\n");
+		running = 0;
 		return 1;
 	}
 	/* ring_map deliberately preserves an existing ring so a bridge restart does
 	 * not disturb a live HAL peer. The device-status fields must still be
 	 * cleared: they describe the headset in front of us, not the last one. */
 	ring_reset_status(ring);
-	printf("ring mapped: %u frames, %u out ch, %u in ch\n",
-	       ring->capacity, ring->out_channels, ring->in_channels);
+	log_line("ring mapped: %u frames, %u out ch, %u in ch\n",
+		 ring->capacity, ring->out_channels, ring->in_channels);
 
 	/* auto-reconnect loop */
 	while (!stop) {
@@ -944,6 +927,7 @@ int main(int argc, char **argv)
 		/* rc == 2: disconnect detected, loop reconnects */
 	}
 
-	printf("\nexiting.\n");
+	log_line("\nexiting.\n");
+	running = 0;
 	return 0;
 }

@@ -1,18 +1,21 @@
 import Foundation
 import Observation
 
-/// Owns the `gip-bridge` daemon: starts it, stops it, and notices when a bridge
-/// someone else launched (from a terminal, say) is already running.
+/// Runs the bridge. The bridge core is linked into this app and runs on its own
+/// thread rather than as a child process, so there is nothing to spawn, adopt or
+/// leave orphaned. The standalone `gip-bridge` CLI still exists for diagnosis,
+/// and holds the USB device exclusively while it runs — hence the check for one.
 @MainActor
 @Observable
 final class BridgeController {
 
     enum State: Equatable {
         case stopped
-        /// Started by this app; we can stop it again.
+        /// Running on this app's bridge thread.
         case running
-        /// Running, but started outside this app (a terminal, a previous run).
-        /// Still ours to stop: it is the same daemon either way.
+        /// The standalone CLI has the device. It is a separate process holding
+        /// exclusive USB access, so this app cannot run its own bridge until it
+        /// exits — and must not kill someone's debugging session.
         case runningExternally
         case failed(String)
     }
@@ -21,29 +24,22 @@ final class BridgeController {
     private(set) var status = HeadsetStatus()
     private(set) var hasRing = false
 
-    private var process: Process?
     private var pollTimer: Timer?
 
-    /// The bridge writes to a log rather than the terminal it no longer has.
+    /// The bridge core still logs to stdout, which a menu bar app does not
+    /// have, so stdout and stderr are redirected here for the life of the app.
     static let logURL: URL = {
         let logs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)
         return logs.appendingPathComponent("XboxHeadsetBridge.log")
     }()
 
-    /// The daemon ships inside the app bundle; the source-tree path is a
-    /// fallback so the app can be run straight out of `build/`.
-    static var bridgeExecutableURL: URL? {
-        if let bundled = Bundle.main.url(forResource: "gip-bridge", withExtension: nil) {
-            return bundled
-        }
-        let sibling = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("gip-bridge")
-        return FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling : nil
-    }
+    /// The bridge core is a single process-wide instance, so this controller is
+    /// too — the bridge thread needs a way back to it.
+    nonisolated(unsafe) static var shared: BridgeController?
 
     init() {
+        Self.shared = self
         refresh()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -56,90 +52,74 @@ final class BridgeController {
 
     func toggle() {
         switch state {
-        case .running, .runningExternally:
+        case .running:
             stop()
+        case .runningExternally:
+            // A terminal session owns the device; leaving it alone is the only
+            // correct move, since we cannot open the device anyway.
+            break
         case .stopped, .failed:
             start()
         }
     }
 
     func start() {
-        guard process == nil else { return }
+        guard state != .running else { return }
 
-        guard let executable = Self.bridgeExecutableURL else {
-            state = .failed("gip-bridge is missing from the app bundle")
+        if Self.externalBridgeIsRunning() {
+            state = .runningExternally
             return
         }
 
-        prepareLog()
+        redirectOutputToLogOnce()
 
-        let task = Process()
-        task.executableURL = executable
-        // No --verbose: the twice-a-second counter line is terminal-only noise
-        // and would otherwise grow the log without bound.
-        task.arguments = []
-        if let handle = try? FileHandle(forWritingTo: Self.logURL) {
-            handle.seekToEndOfFile()
-            task.standardOutput = handle
-            task.standardError = handle
-        }
-        task.terminationHandler = { [weak self] finished in
+        state = .running
+        // bridge_run blocks until bridge_stop, and its IOKit event sources bind
+        // to CFRunLoopGetCurrent(), so it needs a thread of its own that it can
+        // keep for the whole session.
+        let thread = Thread {
+            bridge_set_verbose(false)
+            let rc = bridge_run()
             Task { @MainActor in
-                self?.process = nil
-                Self.ownedPID = 0
-                // A non-zero exit that we did not ask for is worth surfacing;
-                // SIGTERM from `stop()` is not.
-                if finished.terminationReason == .uncaughtSignal || finished.terminationStatus == 0 {
-                    self?.state = .stopped
-                } else {
-                    self?.state = .failed("gip-bridge exited with status \(finished.terminationStatus)")
-                }
-                self?.refresh()
+                BridgeController.shared?.bridgeThreadFinished(rc: rc)
             }
         }
-
-        do {
-            try task.run()
-            process = task
-            Self.ownedPID = task.processIdentifier
-            state = .running
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
+        thread.name = "gip-bridge"
+        thread.stackSize = 512 * 1024
+        thread.start()
     }
 
-    /// Stops the bridge whether or not this app started it. A daemon launched
-    /// from a terminal is the same daemon; refusing to stop it just left the
-    /// menu bar control inert whenever the bridge had been started any other
-    /// way, which is the common case.
     func stop() {
-        // SIGINT, not SIGKILL: the bridge's handler unwinds the USB transfers
-        // and closes the interface, which SIGKILL would leave dangling.
-        if let task = process {
-            kill(task.processIdentifier, SIGINT)
-            process = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                if task.isRunning { task.terminate() }
-            }
+        guard bridge_is_running() else {
+            state = .stopped
+            return
         }
-        for pid in Self.externalBridgePIDs() {
-            kill(pid, SIGINT)
-        }
-        state = .stopped
+        bridge_stop()
+        // bridge_run polls its run loop, so it returns shortly; the thread's
+        // completion handler moves us to .stopped.
     }
 
-    /// Called from the app delegate: a child process outlives its parent unless
-    /// somebody stops it.
+    /// Called from the app delegate: the bridge thread would otherwise keep the
+    /// USB interface open past termination.
     func stopIfOwned() {
-        guard let task = process, task.isRunning else { return }
-        kill(task.processIdentifier, SIGINT)
-        task.waitUntilExit()
+        guard bridge_is_running() else { return }
+        bridge_stop()
+        // Give the session a moment to unwind its transfers and close the
+        // interface, the same courtesy SIGINT gave the child process.
+        for _ in 0..<40 where bridge_is_running() {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    private func bridgeThreadFinished(rc: Int32) {
+        state = rc == 0 ? .stopped : .failed("the bridge could not start (\(rc))")
+        refresh()
     }
 
     // MARK: - Polling
 
     private func refresh() {
-        if process == nil {
+        if !bridge_is_running() {
             if Self.externalBridgeIsRunning() {
                 state = .runningExternally
             } else if case .failed = state {
@@ -147,6 +127,8 @@ final class BridgeController {
             } else {
                 state = .stopped
             }
+        } else if state != .running {
+            state = .running
         }
 
         if let snapshot = HeadsetStatus.read() {
@@ -162,7 +144,7 @@ final class BridgeController {
         !externalBridgePIDs().isEmpty
     }
 
-    /// PIDs of any gip-bridge this app did not spawn.
+    /// PIDs of any standalone gip-bridge process.
     private static func externalBridgePIDs() -> [pid_t] {
         let task = Process()
         let pipe = Pipe()
@@ -174,18 +156,30 @@ final class BridgeController {
             try task.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
-            let mine = self.ownedPID
             return String(decoding: data, as: UTF8.self)
                 .split(whereSeparator: \.isNewline)
                 .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
-                .filter { $0 != mine }
         } catch {
             return []
         }
     }
 
-    /// Set while this app owns a child, so it is not also counted as external.
-    nonisolated(unsafe) private static var ownedPID: pid_t = 0
+
+
+    /// Point stdout/stderr at the log file. Done once: reopening while the
+    /// bridge thread is mid-write would race it.
+    private static var outputRedirected = false
+
+    private func redirectOutputToLogOnce() {
+        guard !Self.outputRedirected else { return }
+        Self.outputRedirected = true
+        prepareLog()
+        Self.logURL.path.withCString { path in
+            _ = freopen(path, "a", stdout)
+            _ = freopen(path, "a", stderr)
+        }
+        setvbuf(stdout, nil, _IONBF, 0)
+    }
 
     private func prepareLog() {
         let fm = FileManager.default
