@@ -189,7 +189,13 @@ final class BridgeController {
             _ = freopen(path, "a", stdout)
             _ = freopen(path, "a", stderr)
         }
+        // freopen resets buffering, and stderr is normally unbuffered only
+        // because it starts that way. Without this it becomes block-buffered
+        // and its lines land in the log in delayed chunks, interleaved wrongly
+        // with stdout -- which makes a session look as though steps that only
+        // log to stderr (the whole authentication exchange) never happened.
         setvbuf(stdout, nil, _IONBF, 0)
+        setvbuf(stderr, nil, _IONBF, 0)
     }
 
     private func prepareLog() {

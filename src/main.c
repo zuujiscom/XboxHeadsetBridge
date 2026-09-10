@@ -43,9 +43,12 @@ int main(int argc, char **argv)
 	signal(SIGINT, on_sigint);
 	signal(SIGTERM, on_sigint);
 
-	/* Unbuffer stdout: when this runs under a pipe, default full buffering
-	 * would withhold handshake progress for minutes. */
+	/* Unbuffer both streams: under a pipe, default full buffering would
+	 * withhold handshake progress for minutes, and stdout and stderr buffered
+	 * differently interleave wrongly -- the authentication exchange logs to
+	 * stderr, so it can appear detached from the session it belongs to. */
 	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 
 	return bridge_run();
 }
