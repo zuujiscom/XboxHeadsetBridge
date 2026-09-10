@@ -81,9 +81,20 @@ $(BUILD)/ringshim.o: menubar/ringshim.c menubar/ringshim.h shared/ring.h | $(BUI
 # @rpath.
 SSL_DYLIB := libcrypto.3.dylib
 
-$(MENUBAR_BIN): $(MENUBAR_SRC) menubar/Bridging.h menubar/Info.plist $(BUILD)/ringshim.o $(BRIDGE_OBJ)
+# The icon is generated rather than committed as a binary: Tools/makeicon.swift
+# draws it at each size natively, so nothing is upscaled.
+ICONSET := $(BUILD)/XboxHeadsetMenu.iconset
+ICNS    := $(BUILD)/XboxHeadsetMenu.icns
+
+$(ICNS): Tools/makeicon.swift | $(BUILD)
+	rm -rf $(ICONSET)
+	swift Tools/makeicon.swift $(ICONSET)
+	iconutil -c icns $(ICONSET) -o $@
+
+$(MENUBAR_BIN): $(MENUBAR_SRC) menubar/Bridging.h menubar/Info.plist $(BUILD)/ringshim.o $(BRIDGE_OBJ) $(ICNS)
 	@mkdir -p $(MENUBAR)/Contents/MacOS $(MENUBAR)/Contents/Resources $(MENUBAR)/Contents/Frameworks
 	cp menubar/Info.plist $(MENUBAR)/Contents/Info.plist
+	cp $(ICNS) $(MENUBAR)/Contents/Resources/XboxHeadsetMenu.icns
 	cp $(SSL_PREFIX)/lib/$(SSL_DYLIB) $(MENUBAR)/Contents/Frameworks/
 	chmod u+w $(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB)
 	install_name_tool -id @rpath/$(SSL_DYLIB) \

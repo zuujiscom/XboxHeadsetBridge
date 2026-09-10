@@ -266,6 +266,7 @@ stdout to `~/Library/Logs/XboxHeadsetBridge.log`.
   new bridge can attach to a ring an older plug-in already mapped. Preserve that
   property.
 - `menubar/`: the menu bar app and its C shim.
+- `Tools/makeicon.swift`: draws the app icon. It is generated, not committed as a binary — the script renders each size natively so nothing is upscaled, and `make menubar-app` runs it into `build/XboxHeadsetMenu.icns` and copies that into the bundle. Edit the script rather than dropping in a pre-made `.icns`.
 - `windows-driver-10.0.26100.9444/`: reference Windows USB Audio driver files.
 
 ## Verification
