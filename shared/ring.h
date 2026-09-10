@@ -25,6 +25,22 @@
 #define RING_IN_CHANNELS    1
 #define RING_FRAMES         32768u        /* power of two */
 
+/* Ceiling on the queued-but-unplayed backlog, i.e. on added latency.
+ *
+ * The emergency skip below only fires once the writer has lapped the whole
+ * ring (683 ms), so any smaller backlog used to persist forever: an
+ * interruption that let the writer run ahead -- a bridge restart while the HAL
+ * kept writing, say -- permanently bought that much latency. One such recovery
+ * left 96 ms of it.
+ *
+ * This is a ceiling, not a target. Normal operation sits around 8-13 ms
+ * (roughly one coreaudiod buffer) and never reaches it, so nothing is trimmed
+ * unless something has genuinely gone long. */
+#define RING_TARGET_BACKLOG 1536u         /* 32 ms at 48 kHz */
+/* Trimmed per read, ~1.3 ms. Correcting gradually reads as slight time
+ * compression; dropping the whole excess at once is an audible gap. */
+#define RING_TRIM_FRAMES    64u
+
 typedef struct {
 	uint32_t magic;
 	uint32_t out_channels;
@@ -161,6 +177,19 @@ static inline void ring_reset_status(ring_t *r)
 	atomic_store(&r->battery_seen, 0);
 }
 
+/* Frames to discard from the front of a queue to walk a persistent backlog back
+ * down toward RING_TARGET_BACKLOG. Returns 0 in normal operation. */
+static inline uint32_t ring_trim(uint64_t avail, uint32_t frames)
+{
+	uint64_t excess;
+
+	if (avail <= (uint64_t)frames + RING_TARGET_BACKLOG)
+		return 0;
+
+	excess = avail - frames - RING_TARGET_BACKLOG;
+	return excess > RING_TRIM_FRAMES ? RING_TRIM_FRAMES : (uint32_t)excess;
+}
+
 /* HAL writes mixed playback audio */
 static inline void ring_out_write(ring_t *r, const float *src, uint32_t frames)
 {
@@ -182,13 +211,19 @@ static inline uint32_t ring_out_read(ring_t *r, float *dst, uint32_t frames)
 	uint64_t w = atomic_load_explicit(&r->out_write_frames, memory_order_acquire);
 	uint64_t rd = atomic_load_explicit(&r->out_read_frames, memory_order_relaxed);
 	uint64_t avail = w > rd ? w - rd : 0;
-	uint32_t n = avail > frames ? frames : (uint32_t)avail;
+	uint32_t n;
 
 	/* if the writer ran far ahead, skip forward rather than play stale audio */
 	if (avail > RING_FRAMES) {
 		rd = w - frames;
-		n = frames;
+		avail = frames;
+	} else {
+		uint32_t trim = ring_trim(avail, frames);
+
+		rd += trim;
+		avail -= trim;
 	}
+	n = avail > frames ? frames : (uint32_t)avail;
 
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t slot = (uint32_t)((rd + i) & (RING_FRAMES - 1));
@@ -224,12 +259,18 @@ static inline uint32_t ring_in_read(ring_t *r, float *dst, uint32_t frames)
 	uint64_t w = atomic_load_explicit(&r->in_write_frames, memory_order_acquire);
 	uint64_t rd = atomic_load_explicit(&r->in_read_frames, memory_order_relaxed);
 	uint64_t avail = w > rd ? w - rd : 0;
-	uint32_t n = avail > frames ? frames : (uint32_t)avail;
+	uint32_t n;
 
 	if (avail > RING_FRAMES) {
 		rd = w - frames;
-		n = frames;
+		avail = frames;
+	} else {
+		uint32_t trim = ring_trim(avail, frames);
+
+		rd += trim;
+		avail -= trim;
 	}
+	n = avail > frames ? frames : (uint32_t)avail;
 
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t slot = (uint32_t)((rd + i) & (RING_FRAMES - 1));

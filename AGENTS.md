@@ -155,11 +155,34 @@ isochronous stream at 125 transfers a second. That produced 8,743,902
 "underruns" on one long session, which is exactly 19.4 hours of an idle device
 (8.7M / (3600/0.008)) and not a single real dropout.
 
-A genuine underrun now means the ring ran dry with audio playing. Note the
-backlog is thin by design -- it sits around 8-13 ms and sawtooths between 384
-and 640 frames, because the HAL writes in coreaudiod's buffer size while the
-bridge reads exactly 384 frames (8 ms) per transfer. That oscillation is normal;
-sustained backlog below 384 frames is not.
+A genuine underrun now means the ring ran dry with audio playing. The backlog
+is thin by design -- it sawtooths with coreaudiod's buffer size, because the HAL
+writes in that size while the bridge reads exactly 384 frames (8 ms) per
+transfer. That oscillation is normal; a sustained backlog below 384 frames is
+not.
+
+## Playback latency is bounded
+
+`ring_out_read`/`ring_in_read` cap the queued-but-unplayed backlog at
+`RING_TARGET_BACKLOG` (1536 frames, 32 ms), trimming `RING_TRIM_FRAMES` (64,
+~1.3 ms) per read once it is exceeded.
+
+The emergency skip only fires when the writer has lapped the entire ring
+(683 ms), so **any smaller backlog used to persist forever**. An interruption
+that let the writer run ahead -- a bridge restart while the HAL kept writing --
+permanently bought that much latency; one recovery left 96 ms of it, and it
+would not have cleared until coreaudiod next restarted the plug-in's IO
+(`StartIO` resyncs the read pointer).
+
+Trim is a ceiling, not a target: normal operation never reaches it and nothing
+is trimmed. Correcting gradually matters -- discarding the whole excess at once
+is an audible gap, whereas 1.3 ms per 8 ms read reads as slight time
+compression. A 96 ms backlog converges in ~336 ms of audio, the 683 ms worst
+case in ~3.9 s.
+
+Do not verify this from a live backlog measurement taken after a restart: a
+restart resets the pointers on its own, so the number looks good whether or not
+the trim works. Exercise `ring_trim()` directly instead.
 
 ## Reference material
 
