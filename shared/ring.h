@@ -45,10 +45,27 @@ typedef struct {
 	_Atomic uint32_t mic_muted;     /* 1 if muted, 0 if unmuted */
 	_Atomic uint32_t vol_out;       /* 0-100 */
 	_Atomic uint32_t vol_in;        /* 0-100 */
-	_Atomic uint32_t battery_level; /* 0-3 */
+	_Atomic uint32_t battery_level; /* enum gip_battery_level, 0-3 */
 	_Atomic uint32_t device_online; /* 1 if USB device connected & streaming */
+	_Atomic uint32_t battery_type;  /* enum gip_battery_type; 0 = no battery */
+	/* battery_level 0 means "empty", which is indistinguishable from "never
+	 * reported" — consumers must check this before showing a level. */
+	_Atomic uint32_t battery_seen;  /* 1 once a STATUS packet has been parsed */
+	/* Host-side software volume applied by the HAL plug-in (0-100), which is
+	 * what the keyboard volume keys drive. Distinct from vol_out, which is the
+	 * headset's own dial as the bridge reads it off the GIP control stream —
+	 * two independent values that must not overwrite each other. */
+	_Atomic uint32_t host_vol_out;
+	_Atomic uint32_t host_muted;
+	/* vol_out 0 is a legitimate "dial at zero" and is indistinguishable from
+	 * "the headset has not reported a volume yet". Anything that *applies*
+	 * vol_out as a gain must check this first, or a stale or missing report
+	 * silences the headset completely. */
+	_Atomic uint32_t vol_seen;
 
-	uint32_t _reserved[6];
+	/* Taken from the former _reserved space, so the struct size is unchanged
+	 * and a new bridge can attach to a ring an older plug-in already mapped. */
+	uint32_t _reserved[1];
 
 	float out_data[RING_FRAMES * RING_OUT_CHANNELS];
 	float in_data[RING_FRAMES * RING_IN_CHANNELS];
@@ -63,6 +80,7 @@ static inline void ring_init(ring_t *r)
 	r->capacity = RING_FRAMES;
 	r->vol_out = 100;
 	r->vol_in = 100;
+	r->host_vol_out = 100;
 }
 
 /* create == true for the bridge daemon (owner), false for the plug-in.
@@ -123,6 +141,24 @@ static inline ring_t *ring_map(bool create)
 		ring_init(r);
 
 	return r;
+}
+
+/* Clears the device-status fields without touching the stream counters or the
+ * audio payload, which a live HAL peer may be mid-way through using.
+ *
+ * The bridge calls this at startup: these fields describe the *current* headset
+ * (its dial, its battery, its mute state), so inheriting them from a previous
+ * bridge run is always wrong, and a stale value that later gets applied as a
+ * gain is actively dangerous. */
+static inline void ring_reset_status(ring_t *r)
+{
+	atomic_store(&r->mic_muted, 0);
+	atomic_store(&r->vol_out, 100);
+	atomic_store(&r->vol_in, 100);
+	atomic_store(&r->vol_seen, 0);
+	atomic_store(&r->battery_level, 0);
+	atomic_store(&r->battery_type, 0);
+	atomic_store(&r->battery_seen, 0);
 }
 
 /* HAL writes mixed playback audio */

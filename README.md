@@ -212,3 +212,43 @@ matches this dongle generically (vendor `0x0e6f`, interface `ff/47/d0`) and
 implements headset audio over ALSA; this project is the macOS counterpart.
 
 xone is GPL-2.0-or-later, so this project is too. See `LICENSE`.
+
+## Menu bar app
+
+`make menubar-app` builds `build/XboxHeadsetMenu.app` — a menu bar–only app that
+starts and stops the bridge so it does not have to live in a terminal. The menu
+shows the headset's battery level, microphone mute state and volume, and the
+icon in the menu bar is the battery reading itself.
+
+```sh
+make menubar-app
+make install-menubar     # copies it to /Applications
+open /Applications/XboxHeadsetMenu.app
+```
+
+`gip-bridge` is bundled inside the app, so the app is self-contained. Its output
+goes to `~/Library/Logs/XboxHeadsetBridge.log` ("Open Log" in the menu). If a
+bridge is already running from a terminal, the app reports it and leaves it
+alone rather than killing it.
+
+To have it start at login, add it under System Settings → General → Login Items.
+
+### Running the bridge by hand
+
+```sh
+./build/gip-bridge            # handshake logging only
+./build/gip-bridge --verbose  # plus the live packet counters
+```
+
+The counter line is redrawn twice a second and is opt-in: it is useful at a
+terminal and pure noise in a log file.
+
+## Volume control
+
+The HAL plug-in publishes a volume and a mute control, so the keyboard volume
+keys, the menu bar slider and Audio MIDI Setup all work while the headset is the
+default output. Reinstall the plug-in after building it:
+
+```sh
+sudo make install-plugin
+```

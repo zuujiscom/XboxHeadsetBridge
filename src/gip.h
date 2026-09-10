@@ -67,6 +67,29 @@ struct gip_header {
 	uint32_t chunk_offset;
 };
 
+/* GIP_CMD_STATUS payload. Byte 0 packs the battery type and level; the rest is
+ * device-specific. Layout follows xone's gip_handle_pkt_status. */
+struct gip_pkt_status {
+	uint8_t  status;
+	uint8_t  unknown[3];
+} __attribute__((packed));
+
+#define GIP_STATUS_BATT_LEVEL  0x03    /* bits 0-1 */
+#define GIP_STATUS_BATT_TYPE   0x0c    /* bits 2-3 */
+
+enum gip_battery_type {
+	GIP_BATT_TYPE_NONE         = 0x00,
+	GIP_BATT_TYPE_STANDARD     = 0x01,
+	GIP_BATT_TYPE_RECHARGEABLE = 0x02,
+};
+
+enum gip_battery_level {
+	GIP_BATT_LEVEL_EMPTY  = 0x00,
+	GIP_BATT_LEVEL_LOW    = 0x01,
+	GIP_BATT_LEVEL_MEDIUM = 0x02,
+	GIP_BATT_LEVEL_FULL   = 0x03,
+};
+
 /* GIP_CMD_ANNOUNCE payload */
 struct gip_pkt_announce {
 	uint8_t  address[6];

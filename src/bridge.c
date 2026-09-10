@@ -14,6 +14,7 @@
 #include "gipusb.h"
 #include "gip_auth.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +55,22 @@
 
 static volatile sig_atomic_t stop;
 static void on_sigint(int sig) { (void)sig; stop = 1; }
+
+/* The live counter line is redrawn twice a second with \r. That is useful at a
+ * terminal and pure noise anywhere else (a log file, or the menu bar app's
+ * captured stdout), so it is opt-in. Handshake logging stays on: it is what
+ * makes a failed pairing diagnosable. */
+static bool verbose;
+
+static void log_line(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+	fflush(stdout);
+}
 
 static gipusb   u;
 static uint8_t  seq;
@@ -319,6 +336,12 @@ static void fill_out_xfer(struct xfer *x)
 		underruns++;
 	frames_out += got;
 
+	/* No host-side volume is applied here. vol_out is a handshake artifact on
+	 * this dongle, not a live dial (see AGENTS.md), so scaling by it silences
+	 * playback the moment the value is stale or zero — which is exactly what
+	 * happened. macOS-side volume belongs in the HAL plug-in, where the system
+	 * volume control actually drives it. */
+
 	for (int p = 0; p < AUDIO_PKTS; p++) {
 		uint8_t *dest = x->buf + p * out_packet_size;
 		int hdr_len;
@@ -528,40 +551,62 @@ static void on_rx(void *ctx, const uint8_t *data, uint32_t len)
 		send_pkt(GIP_CMD_POWER, GIP_OPT_INTERNAL, 0, &power, sizeof(power));
 		send_pkt(GIP_CMD_IDENTIFY, GIP_OPT_INTERNAL, 0, NULL, 0);
 	}
-	if (hdr.command == GIP_CMD_STATUS)
+	if (hdr.command == GIP_CMD_STATUS) {
+		const uint8_t *p = data + hdr_len;
+		uint32_t plen = len - hdr_len;
+
+		/* Byte 0 packs the battery type (bits 2-3) and level (bits 0-1).
+		 * The headset emits this unprompted whenever either changes, so it
+		 * is the only source of battery state we get. */
+		if (plen >= 1 && ring) {
+			uint32_t level = p[0] & GIP_STATUS_BATT_LEVEL;
+			uint32_t type = (p[0] & GIP_STATUS_BATT_TYPE) >> 2;
+
+			atomic_store(&ring->battery_level, level);
+			atomic_store(&ring->battery_type, type);
+			atomic_store(&ring->battery_seen, 1);
+			log_line("  <-- STATUS battery type=%u level=%u\n", type, level);
+		}
 		start_auth_after_status();
+	}
 
 	if (hdr.command == GIP_CMD_AUDIO_CONTROL) {
 		const uint8_t *p = data + hdr_len;
 		uint32_t plen = len - hdr_len;
 
-		if (plen >= 1)
-			printf("\n  <-- AUDIO_CONTROL subcommand=0x%02x\n", p[0]);
+		if (plen >= 1) {
+			char hex[3 * 16 + 1];
+			uint32_t n = plen < 16 ? plen : 16;
+
+			for (uint32_t i = 0; i < n; i++)
+				snprintf(hex + i * 3, 4, "%02x ", p[i]);
+			hex[n * 3 ? n * 3 - 1 : 0] = '\0';
+			log_line("\n  <-- AUDIO_CONTROL subcommand=0x%02x payload=[%s]\n",
+				 p[0], hex);
+		}
 		if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME_CHAT)
 			headset_audio_ready = true;
 		if (plen >= 2 && p[0] == GIP_AUD_CTRL_VOLUME)
 			headset_audio_ready = true;
 		if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME_CHAT)
 			start_auth_after_status();
-		if (plen >= 2 && p[0] == GIP_AUD_CTRL_VOLUME) {
-			bool unmuted = (p[1] & 0x04) != 0;
-			uint8_t vol_out = plen > 2 ? p[2] : 0;
-			uint8_t vol_in = plen > 4 ? p[4] : 0;
-
-			if (ring) {
-				atomic_store(&ring->mic_muted, unmuted ? 0 : 1);
-				atomic_store(&ring->vol_out, vol_out);
-				atomic_store(&ring->vol_in, vol_in);
-			}
-		} else if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME_CHAT) {
-			/* Standalone headsets report volume as:
-			 * subcommand, mute, gain_out, out, in. */
+		/* Both volume subcommands carry xone's gip_pkt_audio_volume:
+		 *   { subcommand, flags, in, unknown, out }
+		 * This dongle sends subcommand 0x00, and a live capture reads
+		 *   00 04 60 00 64
+		 * i.e. chat 96, headset 100 — so p[2] is the chat level and p[4]
+		 * the headset level. The previous code read p[3] (the unknown
+		 * byte, always 0) as the headset volume, which is why the main
+		 * dial always reported 0%. */
+		if (plen >= 5 && (p[0] == GIP_AUD_CTRL_VOLUME_CHAT ||
+				  p[0] == GIP_AUD_CTRL_VOLUME)) {
 			bool unmuted = (p[1] & 0x04) != 0;
 
 			if (ring) {
 				atomic_store(&ring->mic_muted, unmuted ? 0 : 1);
-				atomic_store(&ring->vol_out, p[3]);
-				atomic_store(&ring->vol_in, p[4]);
+				atomic_store(&ring->vol_in, p[2]);
+				atomic_store(&ring->vol_out, p[4]);
+				atomic_store(&ring->vol_seen, 1);
 			}
 		}
 	}
@@ -609,6 +654,38 @@ static void on_rx(void *ctx, const uint8_t *data, uint32_t len)
 			if (auth.last_cmd == 0x08 && !auth.authenticated)
 				gip_auth_complete_without_client_finish(&auth);
 		}
+	}
+
+	/* Log control packets nothing above handles. The headset's volume dial and
+	 * mute button do not appear on AUDIO_CONTROL — every one of those is
+	 * byte-identical and only arrives during the handshake — so if the dial
+	 * reports at all, it reports here. Capped so an unexpected talker cannot
+	 * fill the log. */
+	switch (hdr.command) {
+	case GIP_CMD_ANNOUNCE:
+	case GIP_CMD_STATUS:
+	case GIP_CMD_AUDIO_CONTROL:
+	case GIP_CMD_AUTHENTICATE:
+	case GIP_CMD_ACKNOWLEDGE:
+	case GIP_CMD_AUDIO_SAMPLES:
+		break;
+	default: {
+		static unsigned logged;
+		const uint8_t *p = data + hdr_len;
+		uint32_t plen = len - hdr_len;
+		char hex[3 * 16 + 1];
+		uint32_t n = plen < 16 ? plen : 16;
+
+		if (logged++ < 200) {
+			for (uint32_t i = 0; i < n; i++)
+				snprintf(hex + i * 3, 4, "%02x ", p[i]);
+			hex[n ? n * 3 - 1 : 0] = '\0';
+			log_line("  <-- %s (0x%02x) len=%u payload=[%s]\n",
+				 gip_command_name(hdr.command), hdr.command,
+				 plen, hex);
+		}
+		break;
+	}
 	}
 
 	/* acknowledge chunked traffic so the device does not stall */
@@ -768,6 +845,8 @@ static int run_session(void)
 
 	for (t = 0; !stop && !dev_disconnected; t += 0.5) {
 		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.5, false);
+		if (!verbose)
+			continue;
 		printf("\r  out=%llu in=%llu in_usb=%llu/%lluB audio=%llu other=%llu underruns=%u out_err=%u in_err=%u   ",
 		       (unsigned long long)frames_out, (unsigned long long)frames_in,
 		       (unsigned long long)in_usb_packets, (unsigned long long)in_usb_bytes,
@@ -779,12 +858,13 @@ static int run_session(void)
 	streaming = false;
 	CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.3, false);
 
-	printf("\n\nsubmitted_out=%u completed_out=%u submitted_in=%u completed_in=%u "
-	       "in_usb=%llu/%lluB audio=%llu other=%llu underruns=%u\n",
-	       submitted_out, completed_out, submitted_in, completed_in,
-	       (unsigned long long)in_usb_packets, (unsigned long long)in_usb_bytes,
-	       (unsigned long long)in_audio_packets, (unsigned long long)in_bad_packets,
-	       underruns);
+	if (verbose)
+		printf("\n\nsubmitted_out=%u completed_out=%u submitted_in=%u completed_in=%u "
+		       "in_usb=%llu/%lluB audio=%llu other=%llu underruns=%u\n",
+		       submitted_out, completed_out, submitted_in, completed_in,
+		       (unsigned long long)in_usb_packets, (unsigned long long)in_usb_bytes,
+		       (unsigned long long)in_audio_packets, (unsigned long long)in_bad_packets,
+		       underruns);
 
 	free_xfers();
 	gipusb_close(&u);
@@ -799,15 +879,44 @@ static int run_session(void)
 	return 0;
 }
 
+static void usage(const char *argv0)
+{
+	fprintf(stderr,
+		"usage: %s [-v|--verbose] [-h|--help]\n"
+		"  -v, --verbose   print the live packet-counter line twice a second\n",
+		argv0);
+}
+
 int main(int argc, char **argv)
 {
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
+			verbose = true;
+		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+			usage(argv[0]);
+			return 0;
+		} else {
+			fprintf(stderr, "unknown option: %s\n", argv[i]);
+			usage(argv[0]);
+			return 1;
+		}
+	}
+
 	signal(SIGINT, on_sigint);
+
+	/* Unbuffer stdout: the menu bar app reads this through a pipe, where the
+	 * default full buffering would withhold handshake progress for minutes. */
+	setvbuf(stdout, NULL, _IONBF, 0);
 
 	ring = ring_map(true);
 	if (!ring) {
 		fprintf(stderr, "could not map the shared ring buffer\n");
 		return 1;
 	}
+	/* ring_map deliberately preserves an existing ring so a bridge restart does
+	 * not disturb a live HAL peer. The device-status fields must still be
+	 * cleared: they describe the headset in front of us, not the last one. */
+	ring_reset_status(ring);
 	printf("ring mapped: %u frames, %u out ch, %u in ch\n",
 	       ring->capacity, ring->out_channels, ring->in_channels);
 

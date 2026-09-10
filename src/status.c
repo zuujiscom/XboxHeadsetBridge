@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <string.h>
 
 #include "../shared/ring.h"
 
@@ -22,6 +23,16 @@ static const char *battery_name(uint32_t lvl)
 	case 1:  return "Low";
 	case 2:  return "Medium";
 	case 3:  return "Full";
+	default: return "Unknown";
+	}
+}
+
+static const char *battery_type_name(uint32_t type)
+{
+	switch (type) {
+	case 0:  return "None / wired";
+	case 1:  return "Standard";
+	case 2:  return "Rechargeable";
 	default: return "Unknown";
 	}
 }
@@ -50,6 +61,10 @@ int main(int argc, char **argv)
 		uint32_t vol_out = atomic_load(&r->vol_out);
 		uint32_t vol_in  = atomic_load(&r->vol_in);
 		uint32_t batt    = atomic_load(&r->battery_level);
+		uint32_t seen    = atomic_load(&r->battery_seen);
+		uint32_t btype   = atomic_load(&r->battery_type);
+		uint32_t hvol    = atomic_load(&r->host_vol_out);
+		uint32_t hmute   = atomic_load(&r->host_muted);
 		uint64_t w_out   = atomic_load(&r->out_write_frames);
 		uint64_t r_out   = atomic_load(&r->out_read_frames);
 		uint64_t w_in    = atomic_load(&r->in_write_frames);
@@ -61,9 +76,15 @@ int main(int argc, char **argv)
 		printf("=== Xbox Wireless Headset Status ===\n");
 		printf("  Device Online : %s\n", online ? "YES (Streaming)" : "NO (Offline)");
 		printf("  Microphone    : %s\n", muted ? "MUTED" : "UNMUTED");
-		printf("  Volume (Out)  : %u%%\n", vol_out);
-		printf("  Volume (In)   : %u%%\n", vol_in);
-		printf("  Battery Level : %s (%u)\n", battery_name(batt), batt);
+		printf("  Volume (macOS): %u%%%s\n", hvol, hmute ? "  [MUTED]" : "");
+		printf("  Headset Dial  : out %u%%, chat %u%%\n", vol_out, vol_in);
+		printf("  Battery Type  : %s\n", battery_type_name(btype));
+		/* A level of 0 means "empty", not "unknown" — only battery_seen
+		 * distinguishes the two. */
+		if (seen)
+			printf("  Battery Level : %s (%u)\n", battery_name(batt), batt);
+		else
+			printf("  Battery Level : not reported yet\n");
 		printf("  --- Stream Buffers ---\n");
 		printf("  Playback Frames Written : %llu (Read: %llu)\n",
 		       (unsigned long long)w_out, (unsigned long long)r_out);
