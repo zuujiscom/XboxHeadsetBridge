@@ -15,6 +15,8 @@ typedef struct {
 	uint32_t mic_muted;
 	uint32_t vol_out;         /* the headset's own dial */
 	uint32_t vol_in;
+	uint32_t gain_out;        /* the headset's dial, live as it is turned */
+	uint32_t vol_seen;        /* 0 until the headset has sent a volume packet */
 	uint32_t host_vol_out;    /* macOS-side volume, driven by the volume keys */
 	uint32_t host_muted;
 	uint32_t battery_level;   /* enum gip_battery_level, 0-3 */

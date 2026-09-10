@@ -61,12 +61,11 @@ Interface GUIDs         {9776ff56-9bfd-4581-ad45-b645bba526d6}
 HID descriptor          none (offset 0)
 ```
 
-**The device declares no input capability at all.** There is no VIRTUAL_KEY
-(0x07), no HID_REPORT (0x0b), no INPUT (0x20) and no HID descriptor. That is the
-answer to "why does the volume dial do nothing on the host": there is no channel
-over which a dial, a button, or the bass-boost switch could be reported. Those
-controls are internal to the headset. Do not go looking for a message that
-carries them.
+The device declares no *input* capability: no VIRTUAL_KEY (0x07), no HID_REPORT
+(0x0b), no INPUT (0x20) and no HID descriptor. That is true, but do **not**
+conclude from it that physical controls cannot reach the host — the volume dial
+reports live over AUDIO_CONTROL (0x08), which is declared. See below. The
+bass-boost button has not been observed on any command.
 
 The single audio format pair is exactly what `bridge.c` negotiates. There is no
 alternative rate to select.
@@ -88,37 +87,57 @@ enum { GIP_AUD_VOLUME_UNMUTED = 0x04, GIP_AUD_VOLUME_MIC_MUTED = 0x05 };
 `mute` is an **enum, not a bitmask** — testing it with `& 0x04` reports unmuted
 for the muted value too.
 
-This dongle only ever sends 0x00, and only during the handshake. Observed:
+This dongle only ever sends 0x00. **`gain_out` (p[2]) is the headset's volume
+dial and it reports live**, sweeping the full 0-100 range as the dial is turned:
 
 ```text
-macOS   00 04 60 00 64     mute=UNMUTED gain_out=96  out=0 in=100
-Windows 00 04 00 00 64  -> 00 04 64 00 64            out=0 in=100
+00 04 18 64 64   gain_out = 24
+00 04 60 64 64   gain_out = 96
+00 04 64 64 64   gain_out = 100
 ```
 
-`out` is a constant 0 on this hardware. `gain_out` is the only field that ever
-differs, and it changes only across sessions, never while the dial is turned —
-a 90-second watch with the dial being moved recorded no volume packet at all.
-Treat all of these as a one-shot handshake report, display-only.
+`out` (p[3]) and `in` (p[4]) are not the dial. They sit at constants that differ
+between sessions (both 0x64, or out=0), so treat them as session state, not as
+live values.
 
-Consequently **nothing scales the outgoing PCM by these values.** An earlier
-attempt silenced the headset completely: the ring persisted a stale `vol_out`
-of 0 across a bridge restart and every sample was multiplied by zero. Host-side
-volume belongs in the HAL plug-in, where the macOS volume control drives it.
+**The headset applies the dial itself.** Turning it audibly changes the volume
+with no host involvement, so `gain_out` is a *report*, for display only. Do not
+scale the outgoing PCM by it — that would attenuate a second time on top of the
+hardware. An earlier attempt to apply a volume field to the PCM silenced the
+headset outright: the ring persisted a stale `vol_out` of 0 across a bridge
+restart and every sample was multiplied by zero.
 
 **A gain must never be applied from a status field without its `_seen` flag.**
-`vol_out == 0` is a legitimate value and is indistinguishable from "never
-reported". The same applies to `battery_level`/`battery_seen`.
-`ring_reset_status()` clears these at bridge startup, since `ring_map` preserves
-an existing ring and the status fields describe the headset in front of us, not
-the last one.
+0 is a legitimate value and is indistinguishable from "never reported". The same
+applies to `battery_level`/`battery_seen`. `ring_reset_status()` clears these at
+bridge startup, since `ring_map` preserves an existing ring and the status
+fields describe the headset in front of us, not the last one.
+
+### A warning about diagnosing this hardware
+
+An earlier round of investigation concluded, and briefly documented, that the
+dial produced *no* GIP traffic whatsoever — based on a 90-second watch during
+which the dial was turned and nothing arrived, plus handshake packets that never
+varied. That was wrong. The connection was already degraded at the time and
+failed completely a little later; after a headset power-cycle and a re-pair, the
+same dial reports perfectly.
+
+When this dongle is in a half-connected state it still enumerates, still accepts
+every packet you send, and still completes some of the handshake, while sending
+almost nothing back. Before concluding that the hardware *cannot* do something,
+confirm the link is healthy: `in_usb` and `audio` climbing together, and volume
+packets arriving when the dial moves. A silent device is far more often a sick
+link than a missing capability.
 
 ## Battery
 
 `GIP_CMD_STATUS`'s first payload byte packs the battery type (bits 2-3) and
 level (bits 0-1); see `GIP_STATUS_BATT_TYPE`/`GIP_STATUS_BATT_LEVEL`. STATUS is
-declared in the device's capability list, but **no STATUS packet appears in the
-Windows capture or in any macOS session so far**, so the battery readout may
-stay empty on this dongle. `battery_seen` is what distinguishes that from a
+declared in the device's capability list, but no STATUS packet has appeared in
+the Windows capture or in any macOS session so far, so the battery readout may
+stay empty on this dongle. Given how wrong the equivalent conclusion about the
+volume dial turned out to be, treat this as "not yet observed", not as
+"impossible". `battery_seen` is what distinguishes that from a
 genuine "empty" reading; do not show a level without it.
 
 ## Reference material

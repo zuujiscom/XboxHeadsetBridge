@@ -13,8 +13,9 @@ struct HeadsetStatus: Equatable {
 
     var isOnline = false
     var isMicMuted = false
-    /// The headset's own volume dial, as the bridge reads it off GIP.
-    var headsetVolume: Int = 0
+    /// The headset's own volume dial. The headset applies this itself — it is
+    /// reported for display only, and is `nil` until a volume packet arrives.
+    var headsetDial: Int?
     var inputVolume: Int = 0
     /// macOS-side volume applied by the HAL plug-in — this is what the keyboard
     /// volume keys change.
@@ -36,7 +37,9 @@ struct HeadsetStatus: Equatable {
         var status = HeadsetStatus()
         status.isOnline = raw.online != 0
         status.isMicMuted = raw.mic_muted != 0
-        status.headsetVolume = Int(raw.vol_out)
+        if raw.vol_seen != 0 {
+            status.headsetDial = Int(raw.gain_out)
+        }
         status.inputVolume = Int(raw.vol_in)
         status.systemVolume = Int(raw.host_vol_out)
         status.isSystemMuted = raw.host_muted != 0

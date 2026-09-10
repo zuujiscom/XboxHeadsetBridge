@@ -117,6 +117,9 @@ struct StatusPanel: View {
                 value: bridge.status.systemVolume
             )
             LabeledMeter(title: "Chat", value: bridge.status.inputVolume)
+            if let dial = bridge.status.headsetDial {
+                LabeledMeter(title: "Headset Dial", value: dial)
+            }
         }
     }
 

@@ -29,6 +29,8 @@ bool ring_status_read(ring_status_t *out)
 	out->mic_muted         = atomic_load(&r->mic_muted);
 	out->vol_out           = atomic_load(&r->vol_out);
 	out->vol_in            = atomic_load(&r->vol_in);
+	out->gain_out          = atomic_load(&r->vol_gain_out);
+	out->vol_seen          = atomic_load(&r->vol_seen);
 	out->host_vol_out      = atomic_load(&r->host_vol_out);
 	out->host_muted        = atomic_load(&r->host_muted);
 	out->battery_level     = atomic_load(&r->battery_level);
