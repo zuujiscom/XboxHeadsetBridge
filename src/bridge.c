@@ -532,8 +532,17 @@ static void submit_in_xfer(struct xfer *x)
 	ret = gipusb_iso_read(&u, x->buf, next_in_frame, AUDIO_PKTS, x->list,
 			      in_xfer_done, x);
 	if (ret != kIOReturnSuccess) {
-		if (errors_in++ < 5)
-			fprintf(stderr, "ReadIsochPipeAsync failed: 0x%08x\n", ret);
+		if (errors_in++ < 5) {
+			/* 0xe00002ee is kIOReturnIsoTooOld: the requested first frame is
+			 * already in the past, which long control exchanges routinely
+			 * cause. It is recovered from immediately below, so say so --
+			 * unannotated it reads as a fault in a diagnostics report. */
+			if (ret == kIOReturnIsoTooOld)
+				fprintf(stderr, "  isochronous IN frame was stale;"
+					" rebasing (expected during authentication)\n");
+			else
+				fprintf(stderr, "ReadIsochPipeAsync failed: 0x%08x\n", ret);
+		}
 		next_in_frame = gipusb_frame_number(&u) + ISO_LEAD_FRAMES;
 		ret = gipusb_iso_read(&u, x->buf, next_in_frame, AUDIO_PKTS,
 				      x->list, in_xfer_done, x);
@@ -845,8 +854,7 @@ static int run_session(void)
 	restarting_capture = false;
 	for (int i = 0; i < NUM_XFERS; i++)
 		submit_in_xfer(&in_xfers[i]);
-	printf("\nbridge running - bidirectional audio active\n");
-	printf("(ctrl-c to stop)\n\n");
+	log_line("\nbridge running - bidirectional audio active\n\n");
 
 	/* Setup and authentication deliberately wait on control replies.  Do not
 	 * queue real-time USB traffic until those waits have finished: otherwise
