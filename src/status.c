@@ -65,6 +65,8 @@ int main(int argc, char **argv)
 		uint32_t btype   = atomic_load(&r->battery_type);
 		uint32_t hvol    = atomic_load(&r->host_vol_out);
 		uint32_t hmute   = atomic_load(&r->host_muted);
+		uint32_t gain    = atomic_load(&r->vol_gain_out);
+		uint32_t vseen   = atomic_load(&r->vol_seen);
 		uint64_t w_out   = atomic_load(&r->out_write_frames);
 		uint64_t r_out   = atomic_load(&r->out_read_frames);
 		uint64_t w_in    = atomic_load(&r->in_write_frames);
@@ -77,7 +79,13 @@ int main(int argc, char **argv)
 		printf("  Device Online : %s\n", online ? "YES (Streaming)" : "NO (Offline)");
 		printf("  Microphone    : %s\n", muted ? "MUTED" : "UNMUTED");
 		printf("  Volume (macOS): %u%%%s\n", hvol, hmute ? "  [MUTED]" : "");
-		printf("  Headset Dial  : out %u%%, chat %u%%\n", vol_out, vol_in);
+		/* Like battery, these are meaningless until the headset has
+		 * actually sent a volume packet; ring_reset_status seeds them. */
+		if (vseen)
+			printf("  Headset Report: out %u, in %u, gain_out %u\n",
+			       vol_out, vol_in, gain);
+		else
+			printf("  Headset Report: not reported yet\n");
 		printf("  Battery Type  : %s\n", battery_type_name(btype));
 		/* A level of 0 means "empty", not "unknown" — only battery_seen
 		 * distinguishes the two. */

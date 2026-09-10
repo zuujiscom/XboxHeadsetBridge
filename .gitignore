@@ -2,3 +2,7 @@ build/
 *.o
 *.dSYM/
 reference/
+
+# USB captures: multi-megabyte binaries. Keep them alongside the repo and
+# commit the written analysis instead.
+*.pcapng

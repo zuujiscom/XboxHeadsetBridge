@@ -62,10 +62,9 @@ typedef struct {
 	 * vol_out as a gain must check this first, or a stale or missing report
 	 * silences the headset completely. */
 	_Atomic uint32_t vol_seen;
-
-	/* Taken from the former _reserved space, so the struct size is unchanged
-	 * and a new bridge can attach to a ring an older plug-in already mapped. */
-	uint32_t _reserved[1];
+	/* gip_pkt_audio_volume_chat's gain_out byte. This dongle reports out=0
+	 * permanently but a steady gain_out=96, so it is kept for diagnosis. */
+	_Atomic uint32_t vol_gain_out;
 
 	float out_data[RING_FRAMES * RING_OUT_CHANNELS];
 	float in_data[RING_FRAMES * RING_IN_CHANNELS];
@@ -156,6 +155,7 @@ static inline void ring_reset_status(ring_t *r)
 	atomic_store(&r->vol_out, 100);
 	atomic_store(&r->vol_in, 100);
 	atomic_store(&r->vol_seen, 0);
+	atomic_store(&r->vol_gain_out, 0);
 	atomic_store(&r->battery_level, 0);
 	atomic_store(&r->battery_type, 0);
 	atomic_store(&r->battery_seen, 0);

@@ -590,24 +590,29 @@ static void on_rx(void *ctx, const uint8_t *data, uint32_t len)
 			headset_audio_ready = true;
 		if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME_CHAT)
 			start_auth_after_status();
-		/* Both volume subcommands carry xone's gip_pkt_audio_volume:
-		 *   { subcommand, flags, in, unknown, out }
-		 * This dongle sends subcommand 0x00, and a live capture reads
-		 *   00 04 60 00 64
-		 * i.e. chat 96, headset 100 — so p[2] is the chat level and p[4]
-		 * the headset level. The previous code read p[3] (the unknown
-		 * byte, always 0) as the headset volume, which is why the main
-		 * dial always reported 0%. */
-		if (plen >= 5 && (p[0] == GIP_AUD_CTRL_VOLUME_CHAT ||
-				  p[0] == GIP_AUD_CTRL_VOLUME)) {
-			bool unmuted = (p[1] & 0x04) != 0;
+		/* The two volume subcommands have *different* field orders; see
+		 * struct gip_pkt_audio_volume_chat and gip_pkt_audio_volume.
+		 * This dongle sends 0x00, whose payload reads 00 04 60 00 64:
+		 * mute=0x04 (exactly GIP_AUD_VOLUME_UNMUTED, which confirms the
+		 * alignment), gain_out=96, out=0, in=100. The reported `out` is a
+		 * constant 0 on this hardware — it is not a live dial. */
+		if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME_CHAT && ring) {
+			const struct gip_pkt_audio_volume_chat *v = (const void *)p;
 
-			if (ring) {
-				atomic_store(&ring->mic_muted, unmuted ? 0 : 1);
-				atomic_store(&ring->vol_in, p[2]);
-				atomic_store(&ring->vol_out, p[4]);
-				atomic_store(&ring->vol_seen, 1);
-			}
+			atomic_store(&ring->mic_muted,
+				     v->mute == GIP_AUD_VOLUME_MIC_MUTED);
+			atomic_store(&ring->vol_gain_out, v->gain_out);
+			atomic_store(&ring->vol_out, v->out);
+			atomic_store(&ring->vol_in, v->in);
+			atomic_store(&ring->vol_seen, 1);
+		} else if (plen >= 5 && p[0] == GIP_AUD_CTRL_VOLUME && ring) {
+			const struct gip_pkt_audio_volume *v = (const void *)p;
+
+			atomic_store(&ring->mic_muted,
+				     v->mute == GIP_AUD_VOLUME_MIC_MUTED);
+			atomic_store(&ring->vol_out, v->out);
+			atomic_store(&ring->vol_in, v->in);
+			atomic_store(&ring->vol_seen, 1);
 		}
 	}
 	if (hdr.command == GIP_CMD_AUTHENTICATE) {

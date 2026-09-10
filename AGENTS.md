@@ -42,37 +42,72 @@ authentication code.
   parsed off the GIP control stream — two independent numbers that must not
   overwrite each other.
 
-## Volume reporting
+## What the dongle actually supports
 
-Both volume subcommands carry xone's `gip_pkt_audio_volume`:
-`{ subcommand, flags, in, unknown, out }`. **This dongle sends subcommand `0x00`
-(`GIP_AUD_CTRL_VOLUME_CHAT`), not `0x03`.** A live capture reads:
+Reassembled from the device's own chunked IDENTIFY response in
+`WirelessHeadset/captures.pcapng` (174 bytes, three 58-byte chunks). The
+offsets in `gip_pkt_identify` are relative to the **end of its 16-byte unknown
+block**, not to the start of the payload.
 
 ```text
-  <-- AUDIO_CONTROL subcommand=0x00 payload=[00 04 60 00 64]
+Device class            Windows.Xbox.Input.Headset
+Audio formats  (1)      in 0x09 (24 kHz mono)  out 0x10 (48 kHz stereo)
+System commands OUT (7) 01 ACKNOWLEDGE  02 ANNOUNCE  03 STATUS  04 IDENTIFY
+                        06 AUTHENTICATE 08 AUDIO_CONTROL 60 AUDIO_SAMPLES
+System commands IN  (6) 01 ACKNOWLEDGE  04 IDENTIFY  05 SET_DEVICE_STATE
+                        06 AUTHENTICATE 08 AUDIO_CONTROL 60 AUDIO_SAMPLES
+Interface GUIDs         {9776ff56-9bfd-4581-ad45-b645bba526d6}
+                        {bc25d1a3-c24e-4992-9dda-ef4f123ef5dc}
+HID descriptor          none (offset 0)
 ```
 
-so `p[2]` = 96 is the chat level and `p[4]` = 100 the headset level. `p[3]` is
-the unknown byte and is always 0 — reading it as the headset volume (which the
-bridge used to do) makes the main dial permanently report 0%.
+**The device declares no input capability at all.** There is no VIRTUAL_KEY
+(0x07), no HID_REPORT (0x0b), no INPUT (0x20) and no HID descriptor. That is the
+answer to "why does the volume dial do nothing on the host": there is no channel
+over which a dial, a button, or the bass-boost switch could be reported. Those
+controls are internal to the headset. Do not go looking for a message that
+carries them.
 
-**These values are not a live dial.** Every AUDIO_CONTROL packet observed from
-this dongle is byte-identical and all of them arrive during the handshake.
-Turning the headset's volume dial produces *no* GIP traffic on any command —
-verified with the unhandled-command logging in `on_rx`, which recorded nothing
-over a 90-second window of the dial being turned. Treat `vol_out`/`vol_in` as a
-one-shot capability report, display-only.
+The single audio format pair is exactly what `bridge.c` negotiates. There is no
+alternative rate to select.
 
-Consequently **nothing scales the outgoing PCM by `vol_out`.** An earlier
-attempt to do so silenced the headset completely: the ring persisted a stale
-`vol_out = 0` across a bridge restart and every sample was multiplied by zero.
-Host-side volume belongs in the HAL plug-in, where the macOS volume control
-actually drives it. This headset has no mute button, so `mic_muted` is likewise
-static.
+## Volume reporting
+
+The two volume subcommands have **different field orders**:
+
+```c
+struct gip_pkt_audio_volume_chat {  /* 0x00 */
+	u8 subcommand, mute, gain_out, out, in;
+};
+struct gip_pkt_audio_volume {       /* 0x03 */
+	u8 subcommand, mute, out, chat, in, unknown1, unknown2[2];
+};
+enum { GIP_AUD_VOLUME_UNMUTED = 0x04, GIP_AUD_VOLUME_MIC_MUTED = 0x05 };
+```
+
+`mute` is an **enum, not a bitmask** — testing it with `& 0x04` reports unmuted
+for the muted value too.
+
+This dongle only ever sends 0x00, and only during the handshake. Observed:
+
+```text
+macOS   00 04 60 00 64     mute=UNMUTED gain_out=96  out=0 in=100
+Windows 00 04 00 00 64  -> 00 04 64 00 64            out=0 in=100
+```
+
+`out` is a constant 0 on this hardware. `gain_out` is the only field that ever
+differs, and it changes only across sessions, never while the dial is turned —
+a 90-second watch with the dial being moved recorded no volume packet at all.
+Treat all of these as a one-shot handshake report, display-only.
+
+Consequently **nothing scales the outgoing PCM by these values.** An earlier
+attempt silenced the headset completely: the ring persisted a stale `vol_out`
+of 0 across a bridge restart and every sample was multiplied by zero. Host-side
+volume belongs in the HAL plug-in, where the macOS volume control drives it.
 
 **A gain must never be applied from a status field without its `_seen` flag.**
-`vol_out == 0` is a legitimate "dial at zero" and is indistinguishable from
-"never reported". The same applies to `battery_level`/`battery_seen`.
+`vol_out == 0` is a legitimate value and is indistinguishable from "never
+reported". The same applies to `battery_level`/`battery_seen`.
 `ring_reset_status()` clears these at bridge startup, since `ring_map` preserves
 an existing ring and the status fields describe the headset in front of us, not
 the last one.
@@ -80,11 +115,30 @@ the last one.
 ## Battery
 
 `GIP_CMD_STATUS`'s first payload byte packs the battery type (bits 2-3) and
-level (bits 0-1); see `GIP_STATUS_BATT_TYPE`/`GIP_STATUS_BATT_LEVEL`. The
-headset emits it unprompted when either changes, so it is the only source of
-battery state — there is nothing to poll. `battery_level` 0 means *empty*, which
-is indistinguishable from *never reported*, so consumers must check
-`battery_seen` first.
+level (bits 0-1); see `GIP_STATUS_BATT_TYPE`/`GIP_STATUS_BATT_LEVEL`. STATUS is
+declared in the device's capability list, but **no STATUS packet appears in the
+Windows capture or in any macOS session so far**, so the battery readout may
+stay empty on this dongle. `battery_seen` is what distinguishes that from a
+genuine "empty" reading; do not show a level without it.
+
+## Reference material
+
+- `WirelessHeadset/captures.pcapng` — Windows USBPcap capture (connection and
+  microphone; no volume changes were performed during it). **Not tracked in
+  git** — it is 18 MB of binary, so it is gitignored and lives only alongside
+  the working copy. Everything derived from it is written down here.
+- `WirelessHeadset/headset-capture-analysis.md` — its analysis.
+- Microsoft's GIP is a published open standard: **[MS-GIPUSB]** on
+  learn.microsoft.com, which supersedes the community reverse-engineering
+  notes. It defines Audio Control Configuration, Audio Control Volume Extended,
+  Set Device State, and the Extended Status/battery messages.
+- `windows-driver-10.0.26100.9444/` is Microsoft's *generic USB Audio 2.0 class*
+  driver, bound by `Class_01`, not by VID/PID. It never binds to this
+  vendor-class dongle and tells you nothing about it.
+
+The capture has no Wireshark dependency: `linktype 249` (USBPcap) parses with a
+27-byte packed header, and GIP lengths and chunk offsets are **varints**, not
+plain bytes.
 
 ## Menu bar app
 

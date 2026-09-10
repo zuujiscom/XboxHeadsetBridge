@@ -53,11 +53,39 @@ enum gip_audio_format {
 };
 
 enum gip_audio_control {
-	GIP_AUD_CTRL_VOLUME_CHAT   = 0x00,
+	GIP_AUD_CTRL_VOLUME_CHAT = 0x00,
 	GIP_AUD_CTRL_FORMAT_CHAT = 0x01,
 	GIP_AUD_CTRL_FORMAT      = 0x02,
 	GIP_AUD_CTRL_VOLUME      = 0x03,
 };
+
+/* The mute field of both volume packets is an enum, not a bitmask. Testing it
+ * with `& 0x04` reports unmuted for the muted value too. */
+enum gip_audio_volume_mute {
+	GIP_AUD_VOLUME_UNMUTED   = 0x04,
+	GIP_AUD_VOLUME_MIC_MUTED = 0x05,
+};
+
+/* GIP_AUD_CTRL_VOLUME_CHAT (0x00) payload, after the subcommand byte. */
+struct gip_pkt_audio_volume_chat {
+	uint8_t subcommand;
+	uint8_t mute;
+	uint8_t gain_out;
+	uint8_t out;
+	uint8_t in;
+} __attribute__((packed));
+
+/* GIP_AUD_CTRL_VOLUME (0x03) payload. Note the field order differs from the
+ * chat variant: `out` comes before `chat`, and there is no gain byte. */
+struct gip_pkt_audio_volume {
+	uint8_t subcommand;
+	uint8_t mute;
+	uint8_t out;
+	uint8_t chat;
+	uint8_t in;
+	uint8_t unknown1;
+	uint8_t unknown2[2];
+} __attribute__((packed));
 
 struct gip_header {
 	uint8_t  command;
