@@ -87,21 +87,27 @@ enum { GIP_AUD_VOLUME_UNMUTED = 0x04, GIP_AUD_VOLUME_MIC_MUTED = 0x05 };
 `mute` is an **enum, not a bitmask** — testing it with `& 0x04` reports unmuted
 for the muted value too.
 
-This dongle only ever sends 0x00. **`gain_out` (p[2]) is the headset's volume
-dial and it reports live**, sweeping the full 0-100 range as the dial is turned:
+This dongle only ever sends 0x00, and **both of its physical dials report
+live**. The mapping was established by sweeping each dial in isolation while the
+other was left alone, which is the only reliable way to tell them apart:
 
 ```text
-00 04 18 64 64   gain_out = 24
-00 04 60 64 64   gain_out = 96
-00 04 64 64 64   gain_out = 100
+main dial swept, chat parked:   00 04 18 64 64 ... 00 04 64 64 64   p[2] moves
+chat dial swept, main parked:   00 04 4a 00 64 ... 00 04 4a 64 64   p[3] moves
 ```
 
-`out` (p[3]) and `in` (p[4]) are not the dial. They sit at constants that differ
-between sessions (both 0x64, or out=0), so treat them as session state, not as
-live values.
+| Byte | xone name  | What it actually is on this device |
+|------|------------|------------------------------------|
+| p[2] | `gain_out` | **Main volume dial**, 0-100        |
+| p[3] | `out`      | **Chat dial**, 0-100               |
+| p[4] | `in`       | Constant 100 — not a dial          |
 
-**The headset applies the dial itself.** Turning it audibly changes the volume
-with no host involvement, so `gain_out` is a *report*, for display only. Do not
+Note that xone's field names do **not** describe this hardware: the chat level
+arrives in `out`, and `in` is inert. Trust the sweep, not the name — wiring the
+"Chat" readout to `in` because of its name produced a bar that never moved.
+
+**The headset applies both dials itself.** Turning either audibly changes the
+audio with no host involvement, so these are *reports*, for display only. Do not
 scale the outgoing PCM by it — that would attenuate a second time on top of the
 hardware. An earlier attempt to apply a volume field to the PCM silenced the
 headset outright: the ring persisted a stale `vol_out` of 0 across a bridge
@@ -132,13 +138,12 @@ link than a missing capability.
 ## Battery
 
 `GIP_CMD_STATUS`'s first payload byte packs the battery type (bits 2-3) and
-level (bits 0-1); see `GIP_STATUS_BATT_TYPE`/`GIP_STATUS_BATT_LEVEL`. STATUS is
-declared in the device's capability list, but no STATUS packet has appeared in
-the Windows capture or in any macOS session so far, so the battery readout may
-stay empty on this dongle. Given how wrong the equivalent conclusion about the
-volume dial turned out to be, treat this as "not yet observed", not as
-"impossible". `battery_seen` is what distinguishes that from a
-genuine "empty" reading; do not show a level without it.
+level (bits 0-1). The bridge still parses it and the ring still carries
+`battery_level`/`battery_type`/`battery_seen`, but **no STATUS packet has ever
+been observed** — not in the Windows capture, not in any macOS session. The menu
+bar app therefore does not show a battery reading at all, and `gip-status` no
+longer prints one. Do not re-add a battery UI without first confirming a STATUS
+packet actually arrives.
 
 ## Reference material
 

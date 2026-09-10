@@ -17,13 +17,11 @@ struct XboxHeadsetMenuApp: App {
         .menuBarExtraStyle(.window)
     }
 
-    /// The battery reading is the whole point of the menu bar item, so it is
-    /// what the icon shows whenever the headset has reported one.
+    /// This dongle never reports battery, so the icon just reflects whether the
+    /// headset is connected.
     private var menuBarSymbol: String {
-        guard bridge.state != .stopped, bridge.status.isOnline else {
-            return "headphones"
-        }
-        return bridge.status.battery?.symbolName ?? "headphones"
+        bridge.isActive && bridge.status.isOnline
+            ? "headphones" : "headphones.slash"
     }
 }
 
@@ -89,18 +87,6 @@ struct StatusPanel: View {
     private var readings: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: bridge.status.battery?.symbolName ?? "battery.0percent")
-                    .font(.system(size: 15))
-                    .foregroundStyle(batteryTint)
-                Text("Battery")
-                    .font(.callout)
-                Spacer()
-                Text(batteryText)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(batteryTint)
-            }
-
-            HStack(spacing: 8) {
                 Image(systemName: bridge.status.isMicMuted ? "mic.slash.fill" : "mic.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(bridge.status.isMicMuted ? .orange : .secondary)
@@ -116,9 +102,11 @@ struct StatusPanel: View {
                 title: bridge.status.isSystemMuted ? "Volume (muted)" : "Volume",
                 value: bridge.status.systemVolume
             )
-            LabeledMeter(title: "Chat", value: bridge.status.inputVolume)
             if let dial = bridge.status.headsetDial {
                 LabeledMeter(title: "Headset Dial", value: dial)
+            }
+            if let chat = bridge.status.chatDial {
+                LabeledMeter(title: "Chat Dial", value: chat)
             }
         }
     }
@@ -144,16 +132,6 @@ struct StatusPanel: View {
         }
     }
 
-    private var batteryText: String {
-        guard bridge.status.isOnline else { return "—" }
-        guard let battery = bridge.status.battery else { return "Waiting…" }
-        return battery.label
-    }
-
-    private var batteryTint: Color {
-        guard let battery = bridge.status.battery, bridge.status.isOnline else { return .secondary }
-        return battery.isLow ? .orange : .green
-    }
 }
 
 private struct LabeledMeter: View {

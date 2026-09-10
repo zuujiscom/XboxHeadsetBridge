@@ -33,9 +33,6 @@ bool ring_status_read(ring_status_t *out)
 	out->vol_seen          = atomic_load(&r->vol_seen);
 	out->host_vol_out      = atomic_load(&r->host_vol_out);
 	out->host_muted        = atomic_load(&r->host_muted);
-	out->battery_level     = atomic_load(&r->battery_level);
-	out->battery_type      = atomic_load(&r->battery_type);
-	out->battery_seen      = atomic_load(&r->battery_seen);
 	out->out_write_frames  = atomic_load(&r->out_write_frames);
 	out->out_read_frames   = atomic_load(&r->out_read_frames);
 	out->in_write_frames   = atomic_load(&r->in_write_frames);

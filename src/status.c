@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * gip-status - inspect headset battery, volume, mute state, and stream stats
+ * gip-status - inspect headset volume, mute state, and stream stats
  * from the shared ring buffer populated by gip-bridge and the HAL plug-in.
  */
 
@@ -16,26 +16,6 @@
 static volatile sig_atomic_t stop;
 static void on_sigint(int sig) { (void)sig; stop = 1; }
 
-static const char *battery_name(uint32_t lvl)
-{
-	switch (lvl & 0x03) {
-	case 0:  return "Empty / Critical";
-	case 1:  return "Low";
-	case 2:  return "Medium";
-	case 3:  return "Full";
-	default: return "Unknown";
-	}
-}
-
-static const char *battery_type_name(uint32_t type)
-{
-	switch (type) {
-	case 0:  return "None / wired";
-	case 1:  return "Standard";
-	case 2:  return "Rechargeable";
-	default: return "Unknown";
-	}
-}
 
 int main(int argc, char **argv)
 {
@@ -60,9 +40,6 @@ int main(int argc, char **argv)
 		uint32_t muted   = atomic_load(&r->mic_muted);
 		uint32_t vol_out = atomic_load(&r->vol_out);
 		uint32_t vol_in  = atomic_load(&r->vol_in);
-		uint32_t batt    = atomic_load(&r->battery_level);
-		uint32_t seen    = atomic_load(&r->battery_seen);
-		uint32_t btype   = atomic_load(&r->battery_type);
 		uint32_t hvol    = atomic_load(&r->host_vol_out);
 		uint32_t hmute   = atomic_load(&r->host_muted);
 		uint32_t gain    = atomic_load(&r->vol_gain_out);
@@ -79,20 +56,19 @@ int main(int argc, char **argv)
 		printf("  Device Online : %s\n", online ? "YES (Streaming)" : "NO (Offline)");
 		printf("  Microphone    : %s\n", muted ? "MUTED" : "UNMUTED");
 		printf("  Volume (macOS): %u%%%s\n", hvol, hmute ? "  [MUTED]" : "");
-		/* Like battery, these are meaningless until the headset has
-		 * actually sent a volume packet; ring_reset_status seeds them. */
-		if (vseen)
-			printf("  Headset Report: out %u, in %u, gain_out %u\n",
-			       vol_out, vol_in, gain);
-		else
-			printf("  Headset Report: not reported yet\n");
-		printf("  Battery Type  : %s\n", battery_type_name(btype));
-		/* A level of 0 means "empty", not "unknown" — only battery_seen
-		 * distinguishes the two. */
-		if (seen)
-			printf("  Battery Level : %s (%u)\n", battery_name(batt), batt);
-		else
-			printf("  Battery Level : not reported yet\n");
+		/* Meaningless until the headset has actually sent a volume
+		 * packet; ring_reset_status seeds them.
+		 *
+		 * Empirical mapping, each confirmed by sweeping one dial in
+		 * isolation: gain_out (p[2]) is the main dial, out (p[3]) is the
+		 * chat dial, and in (p[4]) is a constant on this device. */
+		if (vseen) {
+			printf("  Headset Dial  : %u%%\n", gain);
+			printf("  Chat Dial     : %u%%\n", vol_out);
+			printf("  Unused (p[4]) : %u\n", vol_in);
+		} else {
+			printf("  Headset Dials : not reported yet\n");
+		}
 		printf("  --- Stream Buffers ---\n");
 		printf("  Playback Frames Written : %llu (Read: %llu)\n",
 		       (unsigned long long)w_out, (unsigned long long)r_out);
