@@ -332,7 +332,13 @@ static void fill_out_xfer(struct xfer *x)
 	else
 		memset(scratch, 0, sizeof(scratch));
 
-	if (got < (uint32_t)OUT_XFER_FRAMES)
+	/* Only a short read *while the HAL is actually running IO* is starvation.
+	 * When nothing is playing, coreaudiod stops the plug-in's IO and the ring
+	 * stops being written, but this isochronous stream keeps going at 125
+	 * transfers a second -- so counting those made the number meaningless:
+	 * 8.7M "underruns" was simply 19.4 hours of an idle device. */
+	if (got < (uint32_t)OUT_XFER_FRAMES &&
+	    ring && atomic_load(&ring->out_io_running))
 		underruns++;
 	frames_out += got;
 

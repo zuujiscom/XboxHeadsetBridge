@@ -145,6 +145,22 @@ bar app therefore does not show a battery reading at all, and `gip-status` no
 longer prints one. Do not re-add a battery UI without first confirming a STATUS
 packet actually arrives.
 
+## The underruns counter
+
+`underruns` counts short reads from the playback ring, but only while the HAL
+plug-in is actually running IO (`out_io_running`). Without that condition the
+number is meaningless: when nothing is playing, coreaudiod stops the plug-in's
+IO and the ring stops being written, while the bridge keeps sending its
+isochronous stream at 125 transfers a second. That produced 8,743,902
+"underruns" on one long session, which is exactly 19.4 hours of an idle device
+(8.7M / (3600/0.008)) and not a single real dropout.
+
+A genuine underrun now means the ring ran dry with audio playing. Note the
+backlog is thin by design -- it sits around 8-13 ms and sawtooths between 384
+and 640 frames, because the HAL writes in coreaudiod's buffer size while the
+bridge reads exactly 384 frames (8 ms) per transfer. That oscillation is normal;
+sustained backlog below 384 frames is not.
+
 ## Reference material
 
 - `WirelessHeadset/captures.pcapng` — Windows USBPcap capture (connection and
