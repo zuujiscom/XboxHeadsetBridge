@@ -11,7 +11,8 @@ final class BridgeController {
         case stopped
         /// Started by this app; we can stop it again.
         case running
-        /// Running as somebody else's process — we can report it, not stop it.
+        /// Running, but started outside this app (a terminal, a previous run).
+        /// Still ours to stop: it is the same daemon either way.
         case runningExternally
         case failed(String)
     }
@@ -55,12 +56,8 @@ final class BridgeController {
 
     func toggle() {
         switch state {
-        case .running:
+        case .running, .runningExternally:
             stop()
-        case .runningExternally:
-            // Not ours to manage — leave it alone rather than killing a process
-            // the user is watching in a terminal.
-            break
         case .stopped, .failed:
             start()
         }
@@ -89,6 +86,7 @@ final class BridgeController {
         task.terminationHandler = { [weak self] finished in
             Task { @MainActor in
                 self?.process = nil
+                Self.ownedPID = 0
                 // A non-zero exit that we did not ask for is worth surfacing;
                 // SIGTERM from `stop()` is not.
                 if finished.terminationReason == .uncaughtSignal || finished.terminationStatus == 0 {
@@ -103,24 +101,31 @@ final class BridgeController {
         do {
             try task.run()
             process = task
+            Self.ownedPID = task.processIdentifier
             state = .running
         } catch {
             state = .failed(error.localizedDescription)
         }
     }
 
+    /// Stops the bridge whether or not this app started it. A daemon launched
+    /// from a terminal is the same daemon; refusing to stop it just left the
+    /// menu bar control inert whenever the bridge had been started any other
+    /// way, which is the common case.
     func stop() {
-        guard let task = process else { return }
         // SIGINT, not SIGKILL: the bridge's handler unwinds the USB transfers
         // and closes the interface, which SIGKILL would leave dangling.
-        kill(task.processIdentifier, SIGINT)
-        process = nil
-        state = .stopped
-
-        // The bridge sometimes needs a moment to finish its last transfers.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if task.isRunning { task.terminate() }
+        if let task = process {
+            kill(task.processIdentifier, SIGINT)
+            process = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if task.isRunning { task.terminate() }
+            }
         }
+        for pid in Self.externalBridgePIDs() {
+            kill(pid, SIGINT)
+        }
+        state = .stopped
     }
 
     /// Called from the app delegate: a child process outlives its parent unless
@@ -154,19 +159,33 @@ final class BridgeController {
     }
 
     private static func externalBridgeIsRunning() -> Bool {
+        !externalBridgePIDs().isEmpty
+    }
+
+    /// PIDs of any gip-bridge this app did not spawn.
+    private static func externalBridgePIDs() -> [pid_t] {
         let task = Process()
+        let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         task.arguments = ["-x", "gip-bridge"]
-        task.standardOutput = FileHandle.nullDevice
+        task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         do {
             try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
-            return task.terminationStatus == 0
+            let mine = self.ownedPID
+            return String(decoding: data, as: UTF8.self)
+                .split(whereSeparator: \.isNewline)
+                .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+                .filter { $0 != mine }
         } catch {
-            return false
+            return []
         }
     }
+
+    /// Set while this app owns a child, so it is not also counted as external.
+    nonisolated(unsafe) private static var ownedPID: pid_t = 0
 
     private func prepareLog() {
         let fm = FileManager.default

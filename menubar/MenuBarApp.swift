@@ -117,7 +117,6 @@ struct StatusPanel: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
                 .frame(maxWidth: .infinity)
-                .disabled(bridge.state == .runningExternally)
 
             HStack {
                 Button("Open Log") {
@@ -162,18 +161,22 @@ extension BridgeController {
 
     var toggleTitle: String {
         switch state {
-        case .running:           return "Stop Bridge"
-        case .runningExternally: return "Running in Terminal"
-        case .stopped, .failed:  return "Start Bridge"
+        case .running, .runningExternally: return "Stop Bridge"
+        case .stopped, .failed:            return "Start Bridge"
         }
     }
 
     var stateDescription: String {
         switch state {
-        case .stopped:           return "Bridge stopped"
-        case .running:           return status.isOnline ? "Connected" : "Starting…"
-        case .runningExternally: return "Running outside this app"
-        case .failed:            return "Bridge failed"
+        case .stopped:
+            return "Bridge stopped"
+        case .running:
+            return status.isOnline ? "Connected" : "Starting…"
+        case .runningExternally:
+            // Still controllable; the provenance is a detail, not a blocker.
+            return status.isOnline ? "Connected (started elsewhere)" : "Starting…"
+        case .failed:
+            return "Bridge failed"
         }
     }
 
