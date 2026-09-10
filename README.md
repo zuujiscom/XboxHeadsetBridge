@@ -226,10 +226,11 @@ make install-menubar     # copies it to /Applications
 open /Applications/XboxHeadsetMenu.app
 ```
 
-`gip-bridge` is bundled inside the app, so the app is self-contained. Its output
-goes to `~/Library/Logs/XboxHeadsetBridge.log` ("Open Log" in the menu). If a
-bridge is already running from a terminal, the app reports it and leaves it
-alone rather than killing it.
+The bridge runs inside the app on its own thread, so there is no second process
+to manage. Its output goes to `~/Library/Logs/XboxHeadsetBridge.log` ("Open Log"
+in the menu). If the standalone `gip-bridge` is already running from a terminal
+it holds the USB device, so the app reports that and leaves it alone rather than
+fighting over the device.
 
 To have it start at login, add it under System Settings → General → Login Items.
 

@@ -206,17 +206,40 @@ plain bytes.
 ## Menu bar app
 
 `menubar/` builds `build/XboxHeadsetMenu.app`, an `LSUIElement` SwiftUI app that
-starts and stops `gip-bridge` and shows battery, mic and volume state. Notes:
+runs the bridge and shows mic and volume state. `make install-menubar` drops it
+into `/Applications`.
 
-- `gip-bridge` is copied into `Contents/Resources`, so the bundle is
-  self-contained. `make install-menubar` drops it into `/Applications`.
+**The bridge runs inside the app, on a thread — not as a child process.**
+`src/bridge.c` is compiled once into objects that are linked both into the app
+and into the `gip-bridge` CLI. The app drives it through `src/bridge.h`
+(`bridge_run` / `bridge_stop` / `bridge_is_running`).
+
+This works only because of two existing properties, so preserve them:
+
+- `run_session()` polls with `CFRunLoopRunInMode(..., timeout, false)` rather
+  than blocking in `CFRunLoopRun()`, so `stop` is checked frequently.
+- `gipusb.c` attaches its event sources to `CFRunLoopGetCurrent()`, so the
+  bridge simply needs a thread it can keep for the whole session. Open, run and
+  close must all happen on that one thread.
+
+There is one bridge per process: the implementation keeps its state in
+file-scope globals.
+
+Other notes:
+
+- The CLI holds the USB device exclusively while it runs. `BridgeController`
+  detects a standalone `gip-bridge` and refuses to start its own — do not
+  "fix" this by killing it, since it is usually someone's debugging session.
+- A menu bar app has no stdout, so `BridgeController` redirects stdout/stderr
+  to `~/Library/Logs/XboxHeadsetBridge.log` once, before first start.
 - The app talks to the ring through `menubar/ringshim.c`, a flat-snapshot C
   shim. Do not try to import `shared/ring.h` into Swift directly: `_Atomic` and
   the multi-megabyte payload do not bridge.
-- The daemon is stopped with `SIGINT`, not `SIGKILL`, so its handler can unwind
-  the USB transfers and close the interface.
-- `BridgeController` also detects a `gip-bridge` started from a terminal and
-  refuses to manage it.
+- `libcrypto` is copied into `Contents/Frameworks` with both install names
+  rewritten to `@rpath`, because it would otherwise be linked by an absolute
+  Homebrew path that exists on no other machine.
+- Merging the bridge in gave up crash isolation: a fault in the USB layer now
+  takes the whole app down rather than just the bridge.
 - **Quit the app before rebuilding it.** The bundle is ad-hoc signed, so
   rewriting the executable under a running process invalidates that process's
   code signature and the kernel kills it silently — no crash report, the menu
@@ -228,8 +251,8 @@ starts and stops `gip-bridge` and shows battery, mic and volume state. Notes:
 `gip-bridge` prints handshake progress unconditionally — that is what makes a
 failed pairing diagnosable — but the twice-a-second counter line is behind
 `-v`/`--verbose`. It is redrawn with `\r`, which is useful at a terminal and
-pure noise in a log file. The menu bar app runs the daemon without `--verbose`
-and captures stdout to `~/Library/Logs/XboxHeadsetBridge.log`.
+pure noise in a log file. The menu bar app leaves `--verbose` off and redirects
+stdout to `~/Library/Logs/XboxHeadsetBridge.log`.
 
 ## Important files
 
