@@ -63,6 +63,18 @@ uninstall-plugin:
 # headset's battery, mic and volume state from the shared ring. The daemon is
 # copied inside the bundle so the app is self-contained.
 
+# Sign with a real code signing identity when one is present, falling back to
+# ad-hoc. An ad-hoc signature's designated requirement is just the cdhash of
+# that exact build, so every rebuild looks like a different app to macOS and
+# anything keyed to the signature -- TCC permissions, keychain items -- is
+# re-prompted. A certificate keeps the identity stable across rebuilds.
+# Override with: make CODESIGN_ID="Some Other Identity"
+CODESIGN_ID ?= $(shell security find-identity -v -p codesigning 2>/dev/null \
+	| sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)
+ifeq ($(strip $(CODESIGN_ID)),)
+CODESIGN_ID := -
+endif
+
 MENUBAR      := $(BUILD)/XboxHeadsetMenu.app
 MENUBAR_BIN  := $(MENUBAR)/Contents/MacOS/XboxHeadsetMenu
 MENUBAR_SRC  := $(wildcard menubar/*.swift)
@@ -103,8 +115,8 @@ $(MENUBAR_BIN): $(MENUBAR_SRC) menubar/Bridging.h menubar/Info.plist $(BUILD)/ri
 		$(MENUBAR_SRC) $(BUILD)/ringshim.o $(BRIDGE_OBJ) -o $@ \
 		$(LDFLAGS) $(SSL_LDFLAGS) -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 	install_name_tool -change $(SSL_PREFIX)/lib/$(SSL_DYLIB) @rpath/$(SSL_DYLIB) $@
-	@codesign --force --sign - $(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB) 2>/dev/null || true
-	@codesign --force --sign - $(MENUBAR) 2>/dev/null || true
+	@codesign --force --sign "$(CODESIGN_ID)" $(MENUBAR)/Contents/Frameworks/$(SSL_DYLIB) 2>/dev/null || true
+	@codesign --force --sign "$(CODESIGN_ID)" $(MENUBAR) 2>/dev/null || true
 
 # Drop the app into /Applications so it can be added to Login Items.
 install-menubar: menubar-app
