@@ -23,6 +23,9 @@
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
 
 #include "../shared/ring.h"
 
@@ -42,7 +45,10 @@
 #define IN_CHANNELS     1
 
 #define AUDIO_PKTS      8               /* USB frames per isochronous transfer */
-#define NUM_XFERS       4               /* transfers in flight */
+/* Transfers in flight, 8 ms each. This is how long the bridge thread can be
+ * held off before the dongle runs dry: at 4 (32 ms) a measured 40.8 ms stall
+ * under ordinary load emptied the queue, which is heard as static. */
+#define NUM_XFERS       6
 
 /* buffer_size = rate * channels * sizeof(s16) * interval / 1000 */
 #define OUT_BUF_SIZE    (OUT_RATE * OUT_CHANNELS * 2 * GIP_AUDIO_INTERVAL / 1000)  /* 1536 */
@@ -325,6 +331,24 @@ static void pdp_prepare_start(void)
 /* frames of PCM carried by one output transfer */
 #define OUT_XFER_FRAMES (AUDIO_PKTS * OUT_FRAG_SIZE / (int)sizeof(int16_t) / OUT_CHANNELS)
 
+/* Frames over which a step in the output waveform is faded out, ~1.3 ms. */
+#define DECLICK_FRAMES 64
+
+/* Removes a step at buf[start] by adding the difference from `from` (the
+ * sample that preceded it) and letting that offset decay linearly to zero. */
+static void declick(float *buf, int start, int end, const float *from)
+{
+	int n = end - start < DECLICK_FRAMES ? end - start : DECLICK_FRAMES;
+
+	for (int c = 0; c < OUT_CHANNELS; c++) {
+		float offset = from[c] - buf[start * OUT_CHANNELS + c];
+
+		for (int i = 0; i < n; i++)
+			buf[(start + i) * OUT_CHANNELS + c] +=
+				offset * (float)(n - i) / (float)(n + 1);
+	}
+}
+
 static void fill_out_xfer(struct xfer *x)
 {
 	struct gip_header hdr = {
@@ -333,13 +357,36 @@ static void fill_out_xfer(struct xfer *x)
 		.packet_length = OUT_FRAG_SIZE,
 	};
 	static float scratch[OUT_XFER_FRAMES * OUT_CHANNELS];
+	/* The last sample sent, and whether the stream was already broken there. */
+	static float last[OUT_CHANNELS];
+	static bool prev_short;
 	uint32_t got = 0;
 	int frame = 0;
 
-	if (ring)
+	if (ring) {
+		uint64_t before = atomic_load_explicit(&ring->out_read_frames,
+						       memory_order_relaxed);
+
 		got = ring_out_read(ring, scratch, OUT_XFER_FRAMES);
-	else
+
+		/* ring_out_read skips frames to bound latency (a 64-frame trim, or a
+		 * jump after the writer lapped the ring), and zero-fills a short
+		 * read. Each is a hard step in the waveform -- heard as a click, and
+		 * a run of them as static -- so fade across it instead. This is the
+		 * sole reader, so the pointer moves only by what this call did. */
+		bool skipped = atomic_load_explicit(&ring->out_read_frames,
+						    memory_order_relaxed) != before + got;
+
+		if (got && (skipped || prev_short))
+			declick(scratch, 0, (int)got, last);
+		if (got < (uint32_t)OUT_XFER_FRAMES)
+			declick(scratch, (int)got, OUT_XFER_FRAMES,
+				got ? &scratch[(got - 1) * OUT_CHANNELS] : last);
+		prev_short = got < (uint32_t)OUT_XFER_FRAMES;
+	} else {
 		memset(scratch, 0, sizeof(scratch));
+	}
+	memcpy(last, &scratch[(OUT_XFER_FRAMES - 1) * OUT_CHANNELS], sizeof(last));
 
 	/* Only a short read *while the HAL is actually running IO* is starvation.
 	 * When nothing is playing, coreaudiod stops the plug-in's IO and the ring
@@ -920,10 +967,39 @@ static int run_session(void)
 	return 0;
 }
 
+/* The USB completion callbacks that refill the dongle run on this thread's run
+ * loop. At default priority, ordinary load (Spotlight indexing, WindowServer)
+ * held it off for 20-40 ms at a time, long enough to drain the queued
+ * transfers. A time-constraint policy is what Core Audio's own IO threads use;
+ * the kernel demotes a thread that overruns its computation budget, so the
+ * blocking waits during authentication are harmless. */
+static void make_thread_realtime(void)
+{
+	mach_timebase_info_data_t tb;
+	thread_time_constraint_policy_data_t policy;
+	kern_return_t kr;
+
+	mach_timebase_info(&tb);
+	double ticks_per_ms = 1e6 * tb.denom / tb.numer;
+
+	policy.period      = (uint32_t)(AUDIO_PKTS * ticks_per_ms);  /* one transfer */
+	policy.computation = (uint32_t)(1 * ticks_per_ms);
+	policy.constraint  = (uint32_t)(AUDIO_PKTS * ticks_per_ms);
+	policy.preemptible = TRUE;
+
+	kr = thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY,
+			       (thread_policy_t)&policy,
+			       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+	log_line("realtime scheduling: %s\n",
+		 kr == KERN_SUCCESS ? "on" : mach_error_string(kr));
+}
+
 int bridge_run(void)
 {
 	stop = 0;
 	running = 1;
+
+	make_thread_realtime();
 
 	ring = ring_map(true);
 	if (!ring) {

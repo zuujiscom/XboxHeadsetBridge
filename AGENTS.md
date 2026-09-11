@@ -14,6 +14,22 @@ authentication code.
 - Do not require `sudo make install-plugin` to test the bridge; that is only for
   installing the HAL plug-in.
 
+## Output timing
+
+Intermittent "digital static" was traced to the bridge thread, not the EQ or
+clipping. Three things in `src/bridge.c` hold it off, and each is load-bearing:
+
+- `make_thread_realtime()` gives the thread running `bridge_run` a Mach
+  time-constraint policy. At default priority, ordinary load (Spotlight
+  indexing) delayed the USB completion callbacks by 20-40 ms.
+- `NUM_XFERS` is 6 (48 ms of queued output). At 4 (32 ms), a measured 40.8 ms
+  stall drained the queue.
+- `declick()` fades out the waveform step whenever `ring_out_read` trims,
+  skips, or zero-fills. The trim in `shared/ring.h` is a hard 64-frame cut, and
+  without the fade every trim is a click. The fade lives in the bridge, not in
+  `ring.h`, because editing `ring.h` rebuilds the HAL plug-in and needs a
+  `coreaudiod` restart.
+
 ## Protocol facts
 
 - GIP control traffic is interrupt interface 0; audio is interface 1 alt 1.
