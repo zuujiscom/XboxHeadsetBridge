@@ -21,7 +21,8 @@ Linux driver for Xbox accessories. See [Credit and license](#credit-and-license)
 
 ### What you need
 
-- A Mac running **macOS 14 (Sonoma) or later**.
+- A Mac running **macOS 14 (Sonoma) or later**. Tested on macOS 26 and
+  macOS 27; the build targets macOS 14, and the code will not compile for 13.
 - The **PDP LVL50 Wireless for Xbox** headset and its USB dongle (`0e6f:0234`).
   Other Xbox wireless headsets that use the same protocol may work, but only
   the LVL50 has been tested.

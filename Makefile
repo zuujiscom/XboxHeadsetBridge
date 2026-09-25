@@ -1,10 +1,16 @@
+# Oldest macOS the build supports. Without this, clang and swiftc target
+# whatever macOS the build machine runs, so a copy built on a newer Mac
+# refuses to open on an older one. macOS 14 is the real floor: the menu bar
+# app uses @Observable, which does not exist on 13.
+MACOS_MIN ?= 14.0
+
 CC      := clang
-CFLAGS  := -Wall -Wextra -Wno-unused-parameter -O2 -std=c11
+CFLAGS  := -Wall -Wextra -Wno-unused-parameter -O2 -std=c11 -mmacosx-version-min=$(MACOS_MIN)
 LDFLAGS := -framework CoreFoundation -framework IOKit
 BUILD   := build
 
 SWIFTC  := swiftc
-SWIFTFLAGS := -O -parse-as-library
+SWIFTFLAGS := -O -parse-as-library -target $(shell uname -m)-apple-macos$(MACOS_MIN)
 
 .PHONY: all clean probe
 all: $(BUILD)/gip-probe $(BUILD)/gip-tone $(BUILD)/gip-mic $(BUILD)/gip-bridge $(BUILD)/gip-status plugin-bundle menubar-app
@@ -92,6 +98,11 @@ $(BUILD)/ringshim.o: menubar/ringshim.c menubar/ringshim.h shared/ring.h | $(BUI
 # libcrypto is linked by absolute Homebrew path, which does not exist on other
 # machines, so it is copied into the bundle and both install names rewritten to
 # @rpath.
+#
+# The copied libcrypto is Homebrew's, built for the macOS Homebrew installed it
+# on, not for MACOS_MIN. Building from source on each Mac is unaffected; a built
+# app handed to a Mac running an older macOS than the build machine will not
+# load it.
 SSL_DYLIB := libcrypto.3.dylib
 
 # The icon is generated rather than committed as a binary: Tools/makeicon.swift
