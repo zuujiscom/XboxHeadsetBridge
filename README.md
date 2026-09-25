@@ -14,6 +14,113 @@ real Core Audio device that any macOS app can select, and the bridge now receive
 the HAL ring. The bridge daemon auto-reconnects on USB disconnect and forwards
 headset volume/mute state to the HAL ring.
 
+The protocol code is ported from [xone](https://github.com/medusalix/xone), the
+Linux driver for Xbox accessories. See [Credit and license](#credit-and-license).
+
+## Getting started
+
+### What you need
+
+- A Mac running **macOS 14 (Sonoma) or later**.
+- The **PDP LVL50 Wireless for Xbox** headset and its USB dongle (`0e6f:0234`).
+  Other Xbox wireless headsets that use the same protocol may work, but only
+  the LVL50 has been tested.
+- An Apple silicon or Intel Mac. Development and testing were done on Apple
+  silicon.
+- **Xcode Command Line Tools** (for `clang`, `swiftc` and `make`):
+  ```bash
+  xcode-select --install
+  ```
+- **[Homebrew](https://brew.sh)** and OpenSSL 3, which the headset's
+  authentication handshake needs:
+  ```bash
+  brew install openssl@3
+  ```
+
+No kernel extension, no DriverKit, no entitlements and no SIP changes are
+needed. Everything runs as a normal app; `sudo` is only needed once, to install
+the audio plug-in.
+
+### Install
+
+```bash
+git clone https://github.com/zuujiscom/XboxHeadsetBridge.git
+cd XboxHeadsetBridge
+make                      # build everything
+sudo make install-plugin  # install the audio device (restarts Core Audio)
+make install-menubar      # copy the menu bar app to /Applications
+open /Applications/XboxHeadsetMenu.app
+```
+
+`sudo make install-plugin` copies `XboxHeadset.driver` into
+`/Library/Audio/Plug-Ins/HAL` and restarts `coreaudiod`, so any audio that is
+playing will cut out for a second.
+
+### Use it
+
+1. Plug the dongle into the Mac and turn the headset on.
+2. Click the headphones icon in the menu bar. It should say **Connected**. If
+   it says "Bridge stopped", choose **Start Bridge**.
+3. Open **System Settings → Sound** and pick **Xbox Wireless Headset** as both
+   the output and the input. Any app can also select it directly (Discord, Zoom,
+   OBS and so on).
+
+The volume keys, the menu bar volume slider and the headset's own wheel all
+work. The menu also has two toggles:
+
+- **Start bridge when app opens.** Starts audio as soon as the app launches.
+- **Open at Login.** Launches the app when you log in. This only works when the
+  app is in `/Applications`, which is why `make install-menubar` exists.
+
+Unplugging the dongle or turning the headset off is fine. The bridge
+reconnects on its own when the headset comes back.
+
+### Update
+
+```bash
+git pull
+make
+sudo make install-plugin   # only needed if plugin/ or shared/ changed
+```
+
+Quit the menu bar app, then run `make install-menubar` and reopen it. Quit
+before you rebuild: rewriting the app while it is running makes macOS kill it
+without a crash report, and it looks as if the app vanished.
+
+### Uninstall
+
+```bash
+make uninstall-plugin                   # remove the audio device, restart Core Audio
+rm -rf /Applications/XboxHeadsetMenu.app
+```
+
+Also turn off **Open at Login** first, or remove the app under System Settings →
+General → Login Items.
+
+### Troubleshooting
+
+- **"Xbox Wireless Headset" is not in the Sound settings.** The plug-in is not
+  installed or Core Audio has not reloaded it. Run `sudo make install-plugin`
+  again.
+- **The device is listed but there is no sound.** The bridge is not running, or
+  it has not finished pairing. Check the menu, and use **Open Log** to see the
+  handshake. A healthy start ends with authentication completing and audio
+  streaming.
+- **The bridge will not find the dongle.** Check that macOS sees it:
+  ```bash
+  system_profiler SPUSBDataType | grep -A4 -i "0234"
+  ```
+  If nothing shows up, try another USB port or cable, or plug the dongle in
+  directly rather than through a hub.
+- **The menu says "Connected (started elsewhere)".** A `gip-bridge` started
+  from a terminal holds the dongle. That works, but the app cannot run its own
+  bridge until it exits. Stop it with ctrl-c, or with **Stop Bridge** in the menu.
+- **Building fails with a missing `openssl` header or `libcrypto`.** Run
+  `brew install openssl@3`. On an Intel Mac, Homebrew lives in `/usr/local`,
+  which the Makefile finds through `brew --prefix`.
+- **Reporting a problem.** Choose **Copy Diagnostics** in the menu and paste the
+  result into a GitHub issue. The log is at `~/Library/Logs/XboxHeadsetBridge.log`.
+
 ## Architecture
 
 ```
@@ -95,33 +202,7 @@ state as you turn the wheel on the headset.
 | `build/gip-tone [secs]` | Stream a 440 Hz sine wave to the headset (milestone 2 test) |
 | `build/gip-mic [secs] [file.wav]` | Capture mic audio, display VU meter, optionally record to WAV |
 | `build/gip-bridge` | Full bidirectional bridge daemon — auto-reconnects on disconnect |
-| `build/gip-status` | One-shot or continuous (`-c`) display of battery, volume, mute, stream stats |
-
-## Building and installing
-
-```bash
-make                                # build everything
-sudo make install-plugin            # install HAL plug-in + restart coreaudiod
-./build/gip-bridge                  # start the bridge (runs until ctrl-c)
-```
-
-The bridge is a userspace program and does not need `sudo` to run. Rebuild after
-source changes with `make -B build/gip-bridge`. The working authentication and
-capture path is exercised by `build/gip-bridge`; `build/gip-mic` remains useful
-for standalone WAV capture diagnostics.
-
-Then select "Xbox Wireless Headset" as both output and input in any macOS
-audio app.
-
-To uninstall:
-```bash
-make uninstall-plugin               # remove HAL plug-in + restart coreaudiod
-```
-
-No kernel extension, no DriverKit, no entitlements, no SIP changes — a plain
-userspace process claims the vendor-class interface through IOKit. Runs without
-`sudo` (except for `make install-plugin` which needs root to write to
-`/Library/Audio/Plug-Ins/HAL`).
+| `build/gip-status` | One-shot or continuous (`-c`) display of volume, mute and stream stats |
 
 ## Protocol notes learned the hard way
 
@@ -200,7 +281,7 @@ with an incrementing sequence number, followed by raw S16 PCM. Transfers cover
 - [x] Volume/mute wheel handling (live `AUDIO_CONTROL` packets forwarded to
       HAL ring)
 - [x] Auto-reconnect on USB disconnect (device pull, headset power-off)
-- [ ] Battery reporting (needs `GIP_CMD_STATUS` parsing or HID report)
+- [ ] Battery reporting (the parser exists, but this dongle has never sent a `GIP_CMD_STATUS` packet)
 - [ ] Hot-plug detection for dynamic plug/unplug without bridge restart
 
 ## Credit and license
@@ -215,16 +296,10 @@ xone is GPL-2.0-or-later, so this project is too. See `LICENSE`.
 
 ## Menu bar app
 
-`make menubar-app` builds `build/XboxHeadsetMenu.app` — a menu bar–only app that
+`make menubar-app` builds `build/XboxHeadsetMenu.app`, a menu-bar-only app that
 starts and stops the bridge so it does not have to live in a terminal. The menu
-shows the headset's battery level, microphone mute state and volume, and the
-icon in the menu bar is the battery reading itself.
-
-```sh
-make menubar-app
-make install-menubar     # copies it to /Applications
-open /Applications/XboxHeadsetMenu.app
-```
+shows the headset's microphone mute state and volume. The dongle has never been
+seen to report battery level, so there is no battery reading.
 
 The bridge runs inside the app on its own thread, so there is no second process
 to manage. Its output goes to `~/Library/Logs/XboxHeadsetBridge.log` ("Open Log"
@@ -232,9 +307,9 @@ in the menu). If the standalone `gip-bridge` is already running from a terminal
 it holds the USB device, so the app reports that and leaves it alone rather than
 fighting over the device.
 
-To have it start at login, add it under System Settings → General → Login Items.
-
 ### Running the bridge by hand
+
+The bridge does not need `sudo`. Quit the menu bar app's bridge first, then:
 
 ```sh
 ./build/gip-bridge            # handshake logging only
@@ -242,7 +317,8 @@ To have it start at login, add it under System Settings → General → Login It
 ```
 
 The counter line is redrawn twice a second and is opt-in: it is useful at a
-terminal and pure noise in a log file.
+terminal and pure noise in a log file. Rebuild just the bridge after source
+changes with `make -B build/gip-bridge`.
 
 ## Volume control
 

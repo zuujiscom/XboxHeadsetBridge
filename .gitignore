@@ -6,3 +6,6 @@ reference/
 # USB captures: multi-megabyte binaries. Keep them alongside the repo and
 # commit the written analysis instead.
 *.pcapng
+
+# Microsoft's Windows driver binaries: reference only, not redistributable.
+windows-driver-*/

@@ -211,9 +211,10 @@ the trim works. Exercise `ring_trim()` directly instead.
   learn.microsoft.com, which supersedes the community reverse-engineering
   notes. It defines Audio Control Configuration, Audio Control Volume Extended,
   Set Device State, and the Extended Status/battery messages.
-- `windows-driver-10.0.26100.9444/` is Microsoft's *generic USB Audio 2.0 class*
-  driver, bound by `Class_01`, not by VID/PID. It never binds to this
-  vendor-class dongle and tells you nothing about it.
+- Microsoft's *generic USB Audio 2.0 class* driver (`usbaudio2.sys`, Windows
+  10.0.26100.9444) was examined and is **not tracked in git**: it is Microsoft's
+  binary and cannot be redistributed. It is bound by `Class_01`, not by VID/PID,
+  so it never binds to this vendor-class dongle and tells you nothing about it.
 
 The capture has no Wireshark dependency: `linktype 249` (USBPcap) parses with a
 27-byte packed header, and GIP lengths and chunk offsets are **varints**, not
@@ -283,7 +284,6 @@ stdout to `~/Library/Logs/XboxHeadsetBridge.log`.
   property.
 - `menubar/`: the menu bar app and its C shim.
 - `Tools/makeicon.swift`: draws the app icon. It is generated, not committed as a binary — the script renders each size natively so nothing is upscaled, and `make menubar-app` runs it into `build/XboxHeadsetMenu.icns` and copies that into the bundle. Edit the script rather than dropping in a pre-made `.icns`.
-- `windows-driver-10.0.26100.9444/`: reference Windows USB Audio driver files.
 
 ## Verification
 

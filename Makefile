@@ -19,7 +19,8 @@ $(BUILD)/gip-mic: src/mic.c src/gipusb.c src/gip.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # The bridge core, shared by the gip-bridge CLI and the menu bar app.
-SSL_PREFIX  := /opt/homebrew/opt/openssl@3
+# Homebrew is /opt/homebrew on Apple silicon and /usr/local on Intel.
+SSL_PREFIX  ?= $(shell brew --prefix openssl@3 2>/dev/null || echo /opt/homebrew/opt/openssl@3)
 SSL_CFLAGS  := -I$(SSL_PREFIX)/include
 SSL_LDFLAGS := -L$(SSL_PREFIX)/lib -lcrypto
 BRIDGE_SRC  := src/bridge.c src/gip_auth.c src/gipusb.c src/gip.c
