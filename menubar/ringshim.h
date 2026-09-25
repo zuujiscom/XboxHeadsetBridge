@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Plain-C view of the shared ring for the Swift menu bar app.
  *

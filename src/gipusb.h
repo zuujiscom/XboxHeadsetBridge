@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Minimal userspace USB layer over IOKit/IOUSBLib (no kext, no DriverKit). */
 #pragma once
 

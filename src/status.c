@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * gip-status - inspect headset volume, mute state, and stream stats
  * from the shared ring buffer populated by gip-bridge and the HAL plug-in.

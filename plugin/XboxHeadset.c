@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * XboxHeadset - a Core Audio server plug-in publishing a virtual output
  * and input device for the Xbox GIP headset.

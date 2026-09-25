@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* GIP header codec, ported from xone (https://github.com/medusalix/xone). */
 
 #include "gip.h"

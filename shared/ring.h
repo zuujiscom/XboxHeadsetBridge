@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Lock-free single-producer/single-consumer ring buffer shared between the
  * Core Audio HAL plug-in (inside sandboxed coreaudiod) and the USB bridge daemon.

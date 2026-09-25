@@ -292,7 +292,9 @@ Wnuck-Lipinski, the Linux kernel driver for Xbox accessories. xone already
 matches this dongle generically (vendor `0x0e6f`, interface `ff/47/d0`) and
 implements headset audio over ALSA; this project is the macOS counterpart.
 
-xone is GPL-2.0-or-later, so this project is too. See `LICENSE`.
+xone is licensed GPL-2.0-or-later, which allows code derived from it to be
+released under a later version. This project is released under the
+**GNU General Public License v3.0 or later**. See [`LICENSE`](LICENSE).
 
 ## Menu bar app
 
