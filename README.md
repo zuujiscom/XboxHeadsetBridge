@@ -8,6 +8,10 @@ ever appears. The dongle is not a USB Audio Class device: it speaks Microsoft's
 **GIP** (Gaming Input Protocol), the same protocol Xbox One accessories use.
 Nothing in macOS knows that protocol.
 
+<p align="center">
+  <img src="docs/screenshot.webp" width="450" alt="The Xbox Headset Bridge menu bar menu showing the headset connected, with microphone, volume and dial readouts.">
+</p>
+
 Status: **bidirectional audio is working.** Speaker playback works through a
 real Core Audio device that any macOS app can select, and the bridge now receives
 24 kHz mono microphone packets from the USB IN endpoint and forwards them to
