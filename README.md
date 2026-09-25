@@ -57,6 +57,13 @@ open /Applications/XboxHeadsetMenu.app
 `/Library/Audio/Plug-Ins/HAL` and restarts `coreaudiod`, so any audio that is
 playing will cut out for a second.
 
+`make install-menubar` copies **XboxHeadsetMenu.app into your Applications
+folder**. Keep it there and open it from there, not from the `build` folder:
+**Open at Login** only works for an app in Applications, and `make clean`
+deletes the `build` folder. If you prefer Finder, drag
+`build/XboxHeadsetMenu.app` into Applications yourself instead of running
+`make install-menubar`.
+
 ### Use it
 
 1. Plug the dongle into the Mac and turn the headset on.
@@ -71,7 +78,7 @@ work. The menu also has two toggles:
 
 - **Start bridge when app opens.** Starts audio as soon as the app launches.
 - **Open at Login.** Launches the app when you log in. This only works when the
-  app is in `/Applications`, which is why `make install-menubar` exists.
+  app is in your Applications folder (see [Install](#install)).
 
 Unplugging the dongle or turning the headset off is fine. The bridge
 reconnects on its own when the headset comes back.
